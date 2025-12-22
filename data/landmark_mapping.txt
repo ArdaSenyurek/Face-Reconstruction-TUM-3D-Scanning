@@ -1,0 +1,13 @@
+# Landmark to Model Vertex Mapping
+# Format: landmark_index model_vertex_index
+# dlib 68-point landmarks -> model vertex indices
+# Created automatically - verify and adjust if needed
+
+4 700
+8 810
+12 903
+30 125
+36 262
+45 126
+48 374
+54 51

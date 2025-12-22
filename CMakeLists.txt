@@ -56,6 +56,8 @@ set(SOURCES
     src/landmarks/LandmarkData.cpp
     src/alignment/Procrustes.cpp
     src/alignment/LandmarkMapping.cpp
+    src/alignment/ICP.cpp
+    src/rendering/DepthRenderer.cpp
 )
 
 # Header files
@@ -67,6 +69,8 @@ set(HEADERS
     include/landmarks/LandmarkData.h
     include/alignment/Procrustes.h
     include/alignment/LandmarkMapping.h
+    include/alignment/ICP.h
+    include/rendering/DepthRenderer.h
 )
 
 # Main executable
@@ -114,6 +118,34 @@ add_executable(test_pose_init
     ${HEADERS}
 )
 
+# Week 3 - STEP 1: Landmark Mapping Validation
+add_executable(test_landmark_mapping
+    src/test_landmark_mapping.cpp
+    ${SOURCES}
+    ${HEADERS}
+)
+
+# Week 3 - STEP 3: Depth Renderer Test
+add_executable(test_depth_renderer
+    src/test_depth_renderer.cpp
+    ${SOURCES}
+    ${HEADERS}
+)
+
+# Week 3 - STEP 4: Depth Residual Computation
+add_executable(test_depth_residuals
+    src/test_depth_residuals.cpp
+    ${SOURCES}
+    ${HEADERS}
+)
+
+# Week 3 - STEP 5: ICP Validation
+add_executable(test_icp_validation
+    src/test_icp_validation.cpp
+    ${SOURCES}
+    ${HEADERS}
+)
+
 # Link libraries
 target_link_libraries(${PROJECT_NAME}
     Eigen3::Eigen
@@ -139,17 +171,41 @@ target_link_libraries(test_pose_init
     Eigen3::Eigen
 )
 
+target_link_libraries(test_landmark_mapping
+    Eigen3::Eigen
+)
+
+target_link_libraries(test_depth_renderer
+    Eigen3::Eigen
+)
+
+target_link_libraries(test_depth_residuals
+    Eigen3::Eigen
+)
+
+target_link_libraries(test_icp_validation
+    Eigen3::Eigen
+)
+
 if(OpenCV_FOUND)
     target_link_libraries(${PROJECT_NAME} ${OpenCV_LIBS})
     target_link_libraries(test_real_data ${OpenCV_LIBS})
     target_link_libraries(test_depth_lifting ${OpenCV_LIBS})
     target_link_libraries(test_landmarks_io ${OpenCV_LIBS})
     target_link_libraries(test_pose_init ${OpenCV_LIBS})
+    target_link_libraries(test_landmark_mapping ${OpenCV_LIBS})
+    target_link_libraries(test_depth_renderer ${OpenCV_LIBS})
+    target_link_libraries(test_depth_residuals ${OpenCV_LIBS})
+    target_link_libraries(test_icp_validation ${OpenCV_LIBS})
     target_include_directories(${PROJECT_NAME} PUBLIC ${OpenCV_INCLUDE_DIRS})
     target_include_directories(test_real_data PUBLIC ${OpenCV_INCLUDE_DIRS})
     target_include_directories(test_depth_lifting PUBLIC ${OpenCV_INCLUDE_DIRS})
     target_include_directories(test_landmarks_io PUBLIC ${OpenCV_INCLUDE_DIRS})
     target_include_directories(test_pose_init PUBLIC ${OpenCV_INCLUDE_DIRS})
+    target_include_directories(test_landmark_mapping PUBLIC ${OpenCV_INCLUDE_DIRS})
+    target_include_directories(test_depth_renderer PUBLIC ${OpenCV_INCLUDE_DIRS})
+    target_include_directories(test_depth_residuals PUBLIC ${OpenCV_INCLUDE_DIRS})
+    target_include_directories(test_icp_validation PUBLIC ${OpenCV_INCLUDE_DIRS})
 else()
     # Add dummy OpenCV defines to allow code to compile
     target_compile_definitions(${PROJECT_NAME} PRIVATE OPENCV_NOT_FOUND)
@@ -157,6 +213,10 @@ else()
     target_compile_definitions(test_depth_lifting PRIVATE OPENCV_NOT_FOUND)
     target_compile_definitions(test_landmarks_io PRIVATE OPENCV_NOT_FOUND)
     target_compile_definitions(test_pose_init PRIVATE OPENCV_NOT_FOUND)
+    target_compile_definitions(test_landmark_mapping PRIVATE OPENCV_NOT_FOUND)
+    target_compile_definitions(test_depth_renderer PRIVATE OPENCV_NOT_FOUND)
+    target_compile_definitions(test_depth_residuals PRIVATE OPENCV_NOT_FOUND)
+    target_compile_definitions(test_icp_validation PRIVATE OPENCV_NOT_FOUND)
     message(WARNING "Compiling without OpenCV - RGB-D features will not work")
 endif()
 
@@ -186,6 +246,22 @@ target_include_directories(test_pose_init PUBLIC
     ${CMAKE_SOURCE_DIR}/include
 )
 
+target_include_directories(test_landmark_mapping PUBLIC
+    ${CMAKE_SOURCE_DIR}/include
+)
+
+target_include_directories(test_depth_renderer PUBLIC
+    ${CMAKE_SOURCE_DIR}/include
+)
+
+target_include_directories(test_depth_residuals PUBLIC
+    ${CMAKE_SOURCE_DIR}/include
+)
+
+target_include_directories(test_icp_validation PUBLIC
+    ${CMAKE_SOURCE_DIR}/include
+)
+
 # Compiler options
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
     target_compile_options(${PROJECT_NAME} PRIVATE -Wall -Wextra)
@@ -194,6 +270,10 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
     target_compile_options(test_pca_coeffs PRIVATE -Wall -Wextra)
     target_compile_options(test_landmarks_io PRIVATE -Wall -Wextra)
     target_compile_options(test_pose_init PRIVATE -Wall -Wextra)
+    target_compile_options(test_landmark_mapping PRIVATE -Wall -Wextra)
+    target_compile_options(test_depth_renderer PRIVATE -Wall -Wextra)
+    target_compile_options(test_depth_residuals PRIVATE -Wall -Wextra)
+    target_compile_options(test_icp_validation PRIVATE -Wall -Wextra)
 endif()
 
 # Debug info
@@ -204,4 +284,8 @@ if(CMAKE_BUILD_TYPE STREQUAL "Debug")
     target_compile_definitions(test_pca_coeffs PRIVATE DEBUG=1)
     target_compile_definitions(test_landmarks_io PRIVATE DEBUG=1)
     target_compile_definitions(test_pose_init PRIVATE DEBUG=1)
+    target_compile_definitions(test_landmark_mapping PRIVATE DEBUG=1)
+    target_compile_definitions(test_depth_renderer PRIVATE DEBUG=1)
+    target_compile_definitions(test_depth_residuals PRIVATE DEBUG=1)
+    target_compile_definitions(test_icp_validation PRIVATE DEBUG=1)
 endif()

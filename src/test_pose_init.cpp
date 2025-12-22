@@ -1,26 +1,26 @@
 /**
- * STEP D: Initial Sparse Alignment + Pose Initialization Pipeline
+ * STEP 2: Rigid Pose Initialization (Procrustes)
  * 
- * Goal: Reliable initial pose/scale/translation for the face model.
+ * Goal: Re-run rigid alignment using the finalized landmark mapping.
  * 
  * Pipeline:
- *   1) Choose a small stable set of landmarks (e.g., eye corners, nose tip, mouth corners)
- *   2) Get corresponding 3D points from depth lifting at landmark pixels (if valid)
- *   3) Get corresponding 3D vertices from the mean face model (predefined mapping file)
- *   4) Estimate similarity transform with Procrustes (scale,R,t)
- *   5) Apply transform to whole model mesh and export aligned mesh
+ *   1) Use depth lifting to obtain 3D landmark points from the depth map
+ *   2) Apply Procrustes alignment using valid correspondences
+ *   3) Skip landmarks with invalid depth
+ *   4) Print alignment statistics (correspondences, scale, mean alignment error)
+ *   5) Export aligned mesh
  * 
  * Usage:
- *   bin/test_pose_init <rgb_path> <depth_path> <intrinsics_path> <landmarks_path> <model_dir> [mapping_file] [output_ply]
+ *   bin/test_pose_init <rgb_path> <depth_path> <intrinsics_path> <landmarks_path> <model_dir> <mapping_file> [output_ply]
  * 
  * Example:
  *   bin/test_pose_init data/biwi_person01/rgb/frame_00000.png \
  *                      data/biwi_person01/depth/frame_00000.png \
  *                      data/biwi_person01/intrinsics.txt \
- *                      data/biwi_person01/landmarks/frame_00000.txt \
+ *                      build/landmarks_frame_00000.txt \
  *                      data/model \
  *                      data/landmark_mapping.txt \
- *                      aligned_mesh.ply
+ *                      build/aligned_mesh.ply
  */
 
 #include "data/RGBDFrame.h"
@@ -38,19 +38,19 @@
 using namespace face_reconstruction;
 
 int main(int argc, char* argv[]) {
-    if (argc < 6) {
+    if (argc < 7) {
         std::cerr << "Usage: " << argv[0] 
-                  << " <rgb_path> <depth_path> <intrinsics_path> <landmarks_path> <model_dir> [mapping_file] [output_ply]" << std::endl;
+                  << " <rgb_path> <depth_path> <intrinsics_path> <landmarks_path> <model_dir> <mapping_file> [output_ply]" << std::endl;
         std::cerr << "\nExample:" << std::endl;
         std::cerr << "  " << argv[0] 
                   << " data/biwi_person01/rgb/frame_00000.png \\" << std::endl;
         std::cerr << "     data/biwi_person01/depth/frame_00000.png \\" << std::endl;
         std::cerr << "     data/biwi_person01/intrinsics.txt \\" << std::endl;
-        std::cerr << "     data/biwi_person01/landmarks/frame_00000.txt \\" << std::endl;
+        std::cerr << "     build/landmarks_frame_00000.txt \\" << std::endl;
         std::cerr << "     data/model \\" << std::endl;
         std::cerr << "     data/landmark_mapping.txt \\" << std::endl;
-        std::cerr << "     aligned_mesh.ply" << std::endl;
-        std::cerr << "\nNote: mapping_file is optional. If not provided, will use model_index from landmarks." << std::endl;
+        std::cerr << "     build/aligned_mesh.ply" << std::endl;
+        std::cerr << "\nNote: mapping_file is REQUIRED for STEP 2." << std::endl;
         return 1;
     }
     
@@ -59,18 +59,16 @@ int main(int argc, char* argv[]) {
     std::string intrinsics_path = argv[3];
     std::string landmarks_path = argv[4];
     std::string model_dir = argv[5];
-    std::string mapping_file = (argc > 6) ? argv[6] : "";
+    std::string mapping_file = argv[6];  // REQUIRED
     std::string output_ply = (argc > 7) ? argv[7] : "aligned_mesh.ply";
     
-    std::cout << "=== Pose Initialization Test ===" << std::endl;
+    std::cout << "=== STEP 2: Rigid Pose Initialization ===" << std::endl;
     std::cout << "RGB: " << rgb_path << std::endl;
     std::cout << "Depth: " << depth_path << std::endl;
     std::cout << "Intrinsics: " << intrinsics_path << std::endl;
     std::cout << "Landmarks: " << landmarks_path << std::endl;
     std::cout << "Model: " << model_dir << std::endl;
-    if (!mapping_file.empty()) {
-        std::cout << "Mapping: " << mapping_file << std::endl;
-    }
+    std::cout << "Mapping: " << mapping_file << std::endl;
     std::cout << "Output: " << output_ply << std::endl;
     std::cout << std::endl;
     
@@ -123,16 +121,21 @@ int main(int argc, char* argv[]) {
     std::cout << "Loaded model with " << model.num_vertices << " vertices" << std::endl;
     std::cout << std::endl;
     
-    // Load landmark mapping (if provided)
+    // Load landmark mapping (REQUIRED for STEP 2)
     LandmarkMapping mapping;
-    if (!mapping_file.empty()) {
-        if (!mapping.loadFromFile(mapping_file)) {
-            std::cerr << "Warning: Failed to load mapping file, will use model_index from landmarks" << std::endl;
-        }
+    if (!mapping.loadFromFile(mapping_file)) {
+        std::cerr << "ERROR: Failed to load mapping file: " << mapping_file << std::endl;
+        std::cerr << "Mapping file is required for STEP 2. Create it using:" << std::endl;
+        std::cerr << "  python scripts/create_landmark_mapping.py data/model data/landmark_mapping.txt" << std::endl;
+        return 1;
     }
+    
+    std::cout << "Loaded " << mapping.size() << " landmark-to-model mappings" << std::endl;
+    std::cout << std::endl;
     
     // Step 1: Get 3D points from depth at landmark locations
     std::cout << "--- Step 1: Extracting 3D points from depth at landmarks ---" << std::endl;
+    std::cout << "Checking depth validity for " << landmarks.size() << " landmarks..." << std::endl;
     const cv::Mat& depth_map = frame.getDepth();
     
     std::vector<Eigen::Vector3d> observed_3d_points;
@@ -173,10 +176,11 @@ int main(int argc, char* argv[]) {
     }
     std::cout << std::endl;
     
-    // Step 2: Get corresponding model vertices
-    std::cout << "--- Step 2: Getting corresponding model vertices ---" << std::endl;
+    // Step 2: Get corresponding model vertices using finalized mapping
+    std::cout << "--- Step 2: Getting corresponding model vertices (using finalized mapping) ---" << std::endl;
     std::vector<Eigen::Vector3d> model_3d_points;
     std::vector<int> valid_correspondences;
+    std::vector<int> mapped_landmark_indices;  // Track which landmarks were used
     
     Eigen::MatrixXd mean_shape = model.getMeanShapeMatrix();
     
@@ -184,15 +188,18 @@ int main(int argc, char* argv[]) {
         int landmark_idx = valid_landmark_indices[i];
         int model_vertex_idx = -1;
         
-        // Try to get model vertex index from mapping or landmark data
+        // Use mapping file (REQUIRED for STEP 2)
         if (mapping.hasMapping(landmark_idx)) {
             model_vertex_idx = mapping.getModelVertex(landmark_idx);
-        } else if (landmarks[landmark_idx].model_index >= 0) {
-            model_vertex_idx = landmarks[landmark_idx].model_index;
+        } else {
+            // Skip if not in mapping
+            continue;
         }
         
         // Check if model vertex index is valid
         if (model_vertex_idx < 0 || model_vertex_idx >= model.num_vertices) {
+            std::cerr << "Warning: Invalid vertex index " << model_vertex_idx 
+                      << " for landmark " << landmark_idx << std::endl;
             continue;
         }
         
@@ -200,6 +207,7 @@ int main(int argc, char* argv[]) {
         Eigen::Vector3d model_point = mean_shape.row(model_vertex_idx);
         model_3d_points.push_back(model_point);
         valid_correspondences.push_back(static_cast<int>(i));
+        mapped_landmark_indices.push_back(landmark_idx);
     }
     
     std::cout << "Found " << model_3d_points.size() << " valid correspondences" << std::endl;
@@ -207,24 +215,44 @@ int main(int argc, char* argv[]) {
     if (model_3d_points.size() < 6) {
         std::cerr << "ERROR: Not enough valid correspondences (" << model_3d_points.size() 
                   << "). Need at least 6 for Procrustes alignment." << std::endl;
-        std::cerr << "You may need to create a landmark mapping file." << std::endl;
+        std::cerr << "Possible reasons:" << std::endl;
+        std::cerr << "  - Not enough landmarks have valid depth" << std::endl;
+        std::cerr << "  - Mapping file doesn't cover enough landmarks" << std::endl;
+        std::cerr << "  - Landmark indices don't match mapping file" << std::endl;
         return 1;
     }
+    
+    // Print correspondence details
+    std::cout << "Correspondences:" << std::endl;
+    for (size_t i = 0; i < valid_correspondences.size(); ++i) {
+        int corr_idx = valid_correspondences[i];
+        int landmark_idx = mapped_landmark_indices[i];
+        std::cout << "  Landmark " << std::setw(2) << landmark_idx 
+                  << " -> Observed: (" << std::fixed << std::setprecision(4)
+                  << observed_3d_points[corr_idx].x() << ", "
+                  << observed_3d_points[corr_idx].y() << ", "
+                  << observed_3d_points[corr_idx].z() << ")"
+                  << " Model: (" << model_3d_points[i].x() << ", "
+                  << model_3d_points[i].y() << ", " << model_3d_points[i].z() << ")" << std::endl;
+    }
+    std::cout << std::endl;
     
     // Match up the correspondences
     std::vector<Eigen::Vector3d> matched_observed;
     std::vector<Eigen::Vector3d> matched_model;
     
-    for (int corr_idx : valid_correspondences) {
+    for (size_t i = 0; i < valid_correspondences.size(); ++i) {
+        int corr_idx = valid_correspondences[i];
         matched_observed.push_back(observed_3d_points[corr_idx]);
-        matched_model.push_back(model_3d_points[corr_idx]);
+        matched_model.push_back(model_3d_points[i]);
     }
     
-    std::cout << "Using " << matched_observed.size() << " correspondences for alignment" << std::endl;
+    std::cout << "Using " << matched_observed.size() << " correspondences for Procrustes alignment" << std::endl;
     std::cout << std::endl;
     
     // Step 3: Estimate similarity transform with Procrustes
     std::cout << "--- Step 3: Estimating similarity transform (Procrustes) ---" << std::endl;
+    std::cout << "Computing scale, rotation, and translation..." << std::endl;
     
     // Convert to matrices
     Eigen::MatrixXd source_points(matched_model.size(), 3);
@@ -244,13 +272,21 @@ int main(int argc, char* argv[]) {
     }
     
     std::cout << "Estimated transform:" << std::endl;
-    std::cout << "  Scale: " << transform.scale << std::endl;
-    std::cout << "  Rotation:" << std::endl;
-    std::cout << "    " << transform.rotation.row(0) << std::endl;
-    std::cout << "    " << transform.rotation.row(1) << std::endl;
-    std::cout << "    " << transform.rotation.row(2) << std::endl;
-    std::cout << "  Translation: (" << transform.translation.x() << ", " 
-              << transform.translation.y() << ", " << transform.translation.z() << ")" << std::endl;
+    std::cout << "  Scale: " << std::fixed << std::setprecision(6) << transform.scale << std::endl;
+    std::cout << "  Rotation matrix:" << std::endl;
+    std::cout << "    [" << std::setw(10) << transform.rotation(0,0) << " " 
+              << std::setw(10) << transform.rotation(0,1) << " " 
+              << std::setw(10) << transform.rotation(0,2) << "]" << std::endl;
+    std::cout << "    [" << std::setw(10) << transform.rotation(1,0) << " " 
+              << std::setw(10) << transform.rotation(1,1) << " " 
+              << std::setw(10) << transform.rotation(1,2) << "]" << std::endl;
+    std::cout << "    [" << std::setw(10) << transform.rotation(2,0) << " " 
+              << std::setw(10) << transform.rotation(2,1) << " " 
+              << std::setw(10) << transform.rotation(2,2) << "]" << std::endl;
+    std::cout << "  Translation: (" << std::setprecision(4) 
+              << transform.translation.x() << ", " 
+              << transform.translation.y() << ", " 
+              << transform.translation.z() << ") meters" << std::endl;
     std::cout << std::endl;
     
     // Step 4: Apply transform to whole model mesh
@@ -283,26 +319,35 @@ int main(int argc, char* argv[]) {
     
     // Calculate alignment error
     double alignment_error = 0.0;
+    double max_error = 0.0;
+    double min_error = std::numeric_limits<double>::max();
+    
+    std::cout << "Per-correspondence alignment errors:" << std::endl;
     for (size_t i = 0; i < matched_observed.size(); ++i) {
-        int corr_idx = valid_correspondences[i];
-        int landmark_idx = valid_landmark_indices[corr_idx];
-        int model_vertex_idx = -1;
-        
-        if (mapping.hasMapping(landmark_idx)) {
-            model_vertex_idx = mapping.getModelVertex(landmark_idx);
-        } else if (landmarks[landmark_idx].model_index >= 0) {
-            model_vertex_idx = landmarks[landmark_idx].model_index;
-        }
+        int landmark_idx = mapped_landmark_indices[i];
+        int model_vertex_idx = mapping.getModelVertex(landmark_idx);
         
         if (model_vertex_idx >= 0 && model_vertex_idx < aligned_vertices.rows()) {
             Eigen::Vector3d transformed_point = aligned_vertices.row(model_vertex_idx);
             double error = (transformed_point - matched_observed[i]).norm();
             alignment_error += error;
+            
+            if (error > max_error) max_error = error;
+            if (error < min_error) min_error = error;
+            
+            std::cout << "  Landmark " << std::setw(2) << landmark_idx 
+                      << ": " << std::fixed << std::setprecision(4) << error * 1000.0 
+                      << " mm" << std::endl;
         }
     }
     alignment_error /= matched_observed.size();
     
-    std::cout << "Mean alignment error: " << alignment_error << " meters" << std::endl;
+    std::cout << std::endl;
+    std::cout << "Alignment error statistics:" << std::endl;
+    std::cout << "  Mean error: " << std::fixed << std::setprecision(4) 
+              << alignment_error << " meters (" << alignment_error * 1000.0 << " mm)" << std::endl;
+    std::cout << "  Min error:  " << min_error << " meters (" << min_error * 1000.0 << " mm)" << std::endl;
+    std::cout << "  Max error:  " << max_error << " meters (" << max_error * 1000.0 << " mm)" << std::endl;
     std::cout << std::endl;
     
     // Step 5: Export aligned mesh
@@ -316,17 +361,31 @@ int main(int argc, char* argv[]) {
     std::cout << std::endl;
     
     // Summary
-    std::cout << "=== Test Summary ===" << std::endl;
-    std::cout << "✓ Valid depth points: " << observed_3d_points.size() << std::endl;
-    std::cout << "✓ Valid correspondences: " << matched_observed.size() << std::endl;
-    std::cout << "✓ Estimated scale: " << transform.scale << std::endl;
-    std::cout << "✓ Mean alignment error: " << alignment_error << " meters" << std::endl;
+    std::cout << "=== STEP 2 Summary ===" << std::endl;
+    std::cout << "✓ Valid depth points: " << observed_3d_points.size() << " / " << landmarks.size() << " landmarks" << std::endl;
+    std::cout << "✓ Valid correspondences: " << matched_observed.size() << " (using finalized mapping)" << std::endl;
+    std::cout << "✓ Estimated scale: " << std::fixed << std::setprecision(4) << transform.scale << std::endl;
+    std::cout << "✓ Mean alignment error: " << alignment_error * 1000.0 << " mm" << std::endl;
     std::cout << "✓ Aligned mesh saved to: " << output_ply << std::endl;
     std::cout << std::endl;
     
-    std::cout << "=== Test Complete ===" << std::endl;
-    std::cout << "✓ Pose initialization pipeline completed successfully!" << std::endl;
-    std::cout << "  You can visualize the aligned mesh with: meshlab " << output_ply << std::endl;
+    // Check if alignment is good
+    if (alignment_error < 0.01) {  // < 1cm
+        std::cout << "✓ Excellent alignment (error < 1cm)" << std::endl;
+    } else if (alignment_error < 0.02) {  // < 2cm
+        std::cout << "⚠ Good alignment (error < 2cm)" << std::endl;
+    } else {
+        std::cout << "⚠ Alignment error is high (> 2cm). Consider:" << std::endl;
+        std::cout << "  - Checking mapping accuracy" << std::endl;
+        std::cout << "  - Verifying depth quality" << std::endl;
+        std::cout << "  - Adding more correspondences" << std::endl;
+    }
+    std::cout << std::endl;
+    
+    std::cout << "=== STEP 2 Complete ===" << std::endl;
+    std::cout << "✓ Rigid pose initialization completed successfully!" << std::endl;
+    std::cout << "  Next: Implement depth renderer (STEP 3)" << std::endl;
+    std::cout << "  Visualize: meshlab " << output_ply << std::endl;
     
     return 0;
 }
