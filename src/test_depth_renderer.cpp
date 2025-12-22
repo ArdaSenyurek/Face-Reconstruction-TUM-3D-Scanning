@@ -246,25 +246,80 @@ int main(int argc, char* argv[]) {
     // Save rendered depth as 16-bit PNG (for visualization)
     std::cout << "--- Saving Rendered Depth ---" << std::endl;
     
-    // Convert to 16-bit for saving
-    cv::Mat rendered_16bit;
-    rendered_depth.convertTo(rendered_16bit, CV_16U, 1000.0);  // meters to mm
-    
-    // Set NaN to 0
-    cv::Mat mask = cv::Mat::zeros(rendered_depth.size(), CV_8U);
+    // Find valid depth range for normalization
+    double valid_min = std::numeric_limits<double>::max();
+    double valid_max = std::numeric_limits<double>::lowest();
     for (int v = 0; v < rendered_depth.rows; ++v) {
         for (int u = 0; u < rendered_depth.cols; ++u) {
-            if (std::isnan(rendered_depth.at<float>(v, u))) {
+            float r_depth = rendered_depth.at<float>(v, u);
+            if (!std::isnan(r_depth) && r_depth > 0.0) {
+                if (r_depth < valid_min) valid_min = r_depth;
+                if (r_depth > valid_max) valid_max = r_depth;
+            }
+        }
+    }
+    
+    // Convert to 16-bit for saving
+    // Option 1: Direct scale (meters to mm)
+    cv::Mat rendered_16bit;
+    if (valid_max > valid_min) {
+        // Normalize to full 16-bit range for better visualization
+        double range = valid_max - valid_min;
+        rendered_depth.convertTo(rendered_16bit, CV_16U, 65535.0 / range, -valid_min * 65535.0 / range);
+    } else {
+        // Fallback: simple scale to mm
+        rendered_depth.convertTo(rendered_16bit, CV_16U, 1000.0);
+    }
+    
+    // Set NaN/zero to 0
+    for (int v = 0; v < rendered_depth.rows; ++v) {
+        for (int u = 0; u < rendered_depth.cols; ++u) {
+            float r_depth = rendered_depth.at<float>(v, u);
+            if (std::isnan(r_depth) || r_depth <= 0.0) {
                 rendered_16bit.at<uint16_t>(v, u) = 0;
             }
         }
     }
+    
+    std::cout << "Depth range for visualization: [" << valid_min << ", " << valid_max << "] meters" << std::endl;
+    std::cout << "16-bit PNG range: [0, " << (valid_max > valid_min ? 65535 : (valid_max * 1000)) << "]" << std::endl;
     
     if (cv::imwrite(output_rendered, rendered_16bit)) {
         std::cout << "✓ Successfully saved rendered depth to: " << output_rendered << std::endl;
     } else {
         std::cerr << "Failed to save rendered depth" << std::endl;
         return 1;
+    }
+    
+    // Also save raw float depth for accurate residual computation
+    std::string float_depth_path = output_rendered;
+    size_t last_dot = float_depth_path.find_last_of(".");
+    if (last_dot != std::string::npos) {
+        float_depth_path = float_depth_path.substr(0, last_dot) + "_float.bin";
+    } else {
+        float_depth_path += "_float.bin";
+    }
+    
+    // Save as binary float array (for accurate residual computation)
+    std::ofstream float_file(float_depth_path, std::ios::binary);
+    if (float_file.is_open()) {
+        // Write header: width, height, min_depth, max_depth
+        int width = rendered_depth.cols;
+        int height = rendered_depth.rows;
+        float_file.write(reinterpret_cast<const char*>(&width), sizeof(int));
+        float_file.write(reinterpret_cast<const char*>(&height), sizeof(int));
+        float_file.write(reinterpret_cast<const char*>(&valid_min), sizeof(double));
+        float_file.write(reinterpret_cast<const char*>(&valid_max), sizeof(double));
+        
+        // Write depth data
+        for (int v = 0; v < rendered_depth.rows; ++v) {
+            for (int u = 0; u < rendered_depth.cols; ++u) {
+                float depth = rendered_depth.at<float>(v, u);
+                float_file.write(reinterpret_cast<const char*>(&depth), sizeof(float));
+            }
+        }
+        float_file.close();
+        std::cout << "✓ Saved raw float depth to: " << float_depth_path << " (for accurate residuals)" << std::endl;
     }
     std::cout << std::endl;
     

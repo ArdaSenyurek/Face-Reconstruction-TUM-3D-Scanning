@@ -19,6 +19,8 @@
 #include <cmath>
 #include <vector>
 #include <algorithm>
+#include <fstream>
+#include <sstream>
 
 using namespace face_reconstruction;
 
@@ -138,20 +140,78 @@ int main(int argc, char* argv[]) {
     }
     const cv::Mat& observed_depth = frame.getDepth();
     
-    // Load rendered depth (16-bit PNG, convert to float)
-    cv::Mat rendered_16bit = cv::imread(rendered_depth_path, cv::IMREAD_ANYDEPTH);
-    if (rendered_16bit.empty()) {
-        std::cerr << "Failed to load rendered depth" << std::endl;
-        return 1;
+    // Try to load raw float depth first (more accurate)
+    std::string float_depth_path = rendered_depth_path;
+    size_t last_dot = float_depth_path.find_last_of(".");
+    if (last_dot != std::string::npos) {
+        float_depth_path = float_depth_path.substr(0, last_dot) + "_float.bin";
+    } else {
+        float_depth_path += "_float.bin";
     }
     
-    // Convert to float (mm to meters)
     cv::Mat rendered_depth;
-    rendered_16bit.convertTo(rendered_depth, CV_32F, 1.0 / 1000.0);
-    
-    // Set zero values to NaN
-    cv::Mat mask_zero = (rendered_depth == 0.0f);
-    rendered_depth.setTo(std::numeric_limits<float>::quiet_NaN(), mask_zero);
+    std::ifstream float_file(float_depth_path, std::ios::binary);
+    if (float_file.is_open()) {
+        // Load from binary file
+        int width, height;
+        double min_depth, max_depth;
+        float_file.read(reinterpret_cast<char*>(&width), sizeof(int));
+        float_file.read(reinterpret_cast<char*>(&height), sizeof(int));
+        float_file.read(reinterpret_cast<char*>(&min_depth), sizeof(double));
+        float_file.read(reinterpret_cast<char*>(&max_depth), sizeof(double));
+        
+        rendered_depth = cv::Mat::zeros(height, width, CV_32F);
+        for (int v = 0; v < height; ++v) {
+            for (int u = 0; u < width; ++u) {
+                float depth;
+                float_file.read(reinterpret_cast<char*>(&depth), sizeof(float));
+                rendered_depth.at<float>(v, u) = depth;
+            }
+        }
+        float_file.close();
+        std::cout << "Loaded raw float depth from: " << float_depth_path << std::endl;
+        std::cout << "  Range: [" << min_depth << ", " << max_depth << "] meters" << std::endl;
+    } else {
+        // Fallback: Load from PNG (may be normalized)
+        cv::Mat rendered_16bit = cv::imread(rendered_depth_path, cv::IMREAD_ANYDEPTH);
+        if (rendered_16bit.empty()) {
+            std::cerr << "Failed to load rendered depth" << std::endl;
+            return 1;
+        }
+        
+        // Check if image is normalized (max value close to 65535)
+        double max_val = 0.0;
+        cv::minMaxLoc(rendered_16bit, nullptr, &max_val);
+        
+        if (max_val > 10000) {
+            // Image is normalized, use observed depth range as estimate
+            double obs_min = std::numeric_limits<double>::max();
+            double obs_max = std::numeric_limits<double>::lowest();
+            for (int v = 0; v < observed_depth.rows; ++v) {
+                for (int u = 0; u < observed_depth.cols; ++u) {
+                    float d = observed_depth.at<float>(v, u);
+                    if (frame.isValidDepth(d)) {
+                        if (d < obs_min) obs_min = d;
+                        if (d > obs_max) obs_max = d;
+                    }
+                }
+            }
+            
+            // Use observed range as estimate for rendered depth
+            double range_m = obs_max - obs_min;
+            rendered_16bit.convertTo(rendered_depth, CV_32F, range_m / 65535.0, obs_min);
+            
+            std::cout << "Note: Rendered depth appears normalized, using observed range [" 
+                      << obs_min << ", " << obs_max << "] meters" << std::endl;
+        } else {
+            // Image is in mm, convert to meters
+            rendered_16bit.convertTo(rendered_depth, CV_32F, 1.0 / 1000.0);
+        }
+        
+        // Set zero values to NaN
+        cv::Mat mask_zero = (rendered_depth == 0.0f);
+        rendered_depth.setTo(std::numeric_limits<float>::quiet_NaN(), mask_zero);
+    }
     
     std::cout << "Image dimensions: " << observed_depth.cols << " x " << observed_depth.rows << std::endl;
     std::cout << std::endl;
