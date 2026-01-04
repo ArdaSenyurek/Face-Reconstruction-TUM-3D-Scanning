@@ -2,6 +2,14 @@
 
 ## What have we accomplished this week?
 
+### 🚀 Latest pipeline + analysis run (Jan 04)
+- Ran unified pipeline on Biwi Kaggle data for sequences 01–24, frames 0–4 with `--landmarks face_alignment --save-pointclouds --save-depth-vis --save-metrics` (numpy pinned to <2 for face-alignment).
+- Landmarks saved for frame_00000 of all 24 sequences: `outputs/landmarks/<seq>/frame_00000.txt` with overlays in `outputs/overlays/<seq>/`.
+- Reconstructions for frames 00000–00004 saved under `outputs/meshes/<seq>/frame_XXXXX.ply`; analysis artifacts under `outputs/analysis/pointclouds` and `outputs/analysis/depth_vis`; metrics JSON at `outputs/analysis/metrics.json`.
+- Depth residual check (seq 01, frame 00000): MAE **3.2 mm**, residual range [-58.2, 110.5] mm; heatmap at `outputs/analysis/depth_residuals/01/frame_00000.png`; ICP validation: 0.56 mm → 0.55 mm (1% improvement).
+- Depth residual check (seq 17, frame 00000): MAE **244 mm**, range [153.8, 353.5] mm indicating pose/depth mismatch; ICP validation: 216.9 mm → 12.2 mm (94.4% improvement) at `outputs/analysis/depth_residuals/17/frame_00000.png`.
+- Metrics highlights (cloud→mesh RMSE, m): low-error seqs (01 ≈ 0.007 m, 14 ≈ 0.016 m); high-error seqs (06 ≈ 0.155 m, 15 ≈ 0.181 m, 17 ≈ 0.213 m, 18 ≈ 0.197 m, 19 ≈ 0.226 m, 21 ≈ 0.226 m, 23 ≈ 0.240 m).
+
 ### ✅ STEP 1: Landmark-to-Model Vertex Mapping (HIGHEST PRIORITY)
 **Status: COMPLETED ✓**
 
@@ -64,13 +72,10 @@
   - Dense residual computation: `residual = observed_depth - rendered_depth`
   - Statistical analysis (mean, min, max, median, quartiles)
   - Residual heatmap visualization (color-coded: blue→green→red)
-- **Results** (updated with Biwi model):
-  - Valid pixels for residual computation
-  - Mean absolute error: **23.4 mm** (moderate consistency)
-  - Residual range: [-77.0, 75.0] mm
-  - Median: -7.0 mm
-  - Q25: -22.0 mm, Q75: 5.0 mm
-- **Deliverable**: `build/residual_heatmap.png` - Visual residual map (updated)
+- **Recent results (pipeline data)**:
+  - Seq 01 frame_00000: MAE **3.2 mm**, residual range [-58.2, 110.5] mm (excellent overlap)
+  - Seq 17 frame_00000: MAE **244 mm**, residual range [153.8, 353.5] mm (large pose/depth offset)
+- **Deliverables**: `outputs/analysis/depth_residuals/<seq>/frame_00000.png` (heatmaps)
 
 ### ✅ STEP 5: ICP as Validation Tool
 **Status: COMPLETED ✓**
@@ -78,12 +83,10 @@
 - **ICP implementation**: Point-to-point ICP for alignment validation
 - **Module**: `include/alignment/ICP.h` and `src/alignment/ICP.cpp`
 - **Test executable**: `bin/test_icp_validation` created
-- **Results**:
-  - Initial error (after Procrustes): 9.2 mm
-  - Final error (after ICP): **6.3 mm**
-  - Error reduction: **31.9%**
-  - ICP converged: Yes (43 iterations)
-  - Alignment quality: Excellent (< 1cm)
+- **Recent results (pipeline data)**:
+  - Seq 01 frame_00000: 0.56 mm → 0.55 mm (1% improvement; already good)
+  - Seq 17 frame_00000: 216.9 mm → 12.2 mm (94.4% improvement; ICP exposes initial misalignment)
+- **Outputs**: Run `bin/test_icp_validation <mesh> <pointcloud>`; latest logs in terminal and meshes/pointclouds under `outputs/meshes` / `outputs/analysis/pointclouds`
 - **Important**: ICP used ONLY for validation, not as a full optimization method (as per supervisor requirements)
 
 ### 📦 Infrastructure & Build System
@@ -106,6 +109,13 @@
 ---
 
 ## Which problems did we encounter?
+
+### 🔧 Problem 0: NumPy 2.x incompatibility with face-alignment
+**Problem**: face-alignment (and its SFD detector) failed with NumPy 2.2.6, blocking landmark extraction.
+
+**Solution**: Pin `numpy<2` in the venv; reran pipeline successfully with face-alignment landmarks.
+
+**Impact**: OpenCV/JAX now warn about expecting NumPy>=2; acceptable trade-off for landmarks. If needed, use a separate env for those packages.
 
 ### 🔧 Problem 1: Landmark Mapping Accuracy
 **Problem**: Initial automatic mapping had some inaccuracies due to geometric heuristics. Manual verification needed.
@@ -304,9 +314,9 @@
 
 ### Alignment Quality
 - **Pose initialization**: 37.5 mm mean error (with Biwi model, sparse landmarks)
-- **Dense residuals**: 23.4 mm mean absolute error (moderate consistency)
-- **ICP validation**: 6.3 mm final error (31.9% improvement, from dummy model tests)
-- **Overall**: Alignment quality is acceptable; can be improved with better mapping and model refinement
+- **Dense residuals (latest)**: Seq 01 MAE 3.2 mm; Seq 17 MAE 244 mm (shows pose/depth mismatch on some sequences)
+- **ICP validation (latest)**: Seq 01 ~0.55 mm (1% improvement); Seq 17 216.9 mm → 12.2 mm (94.4% improvement)
+- **Overall**: Good on many sequences; some sequences show large offsets—ICP highlights fixable misalignment
 
 ### Depth Rendering
 - **Renderer implemented**: Triangle rasterization with z-buffer
@@ -329,8 +339,8 @@
 - **Real face model created** from Biwi dataset (replaced dummy model)
 - **Dense mesh generated** with proper triangulation (1570 faces)
 - **Depth rendering pipeline** operational
-- **Residual analysis** shows moderate consistency (23.4 mm mean error)
-- **ICP validation** confirms alignment quality
+- **Residual analysis**: Seq 01 excellent (3.2 mm MAE); Seq 17 shows large offset (244 mm) requiring pose/intrinsics check
+- **ICP validation**: Confirms good cases and reveals how much bad cases can be recovered (e.g., seq 17 → 12.2 mm after ICP)
 - **Project cleaned**: Removed dummy models, unnecessary documentation, and intermediate files
 - Pipeline is ready for **multi-frame processing** and **optimization** (Week 4)
 
