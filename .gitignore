@@ -15,10 +15,11 @@ CMakeCache.txt
 CMakeFiles/
 cmake_install.cmake
 Makefile
-
+.venv/
 # Data directories (uncomment if you don't want to commit data)
-# data/
-# output/
+data/
+data/biwi_download/
+outputs/
 
 # Python
 __pycache__/
