@@ -31,6 +31,12 @@ from typing import Dict, List, Optional, Tuple
 
 import cv2
 import numpy as np
+try:
+    from scipy.spatial import cKDTree  # type: ignore
+
+    _HAS_CKDTREE = True
+except Exception:
+    _HAS_CKDTREE = False
 
 # Prefer system cert bundle; fall back to certifi if available
 try:
@@ -55,6 +61,13 @@ try:
     _DLIB_AVAILABLE = True
 except Exception:
     _DLIB_AVAILABLE = False
+
+try:
+    import face_alignment  # type: ignore
+
+    _FA_AVAILABLE = True
+except Exception:
+    _FA_AVAILABLE = False
 
 
 DATASET_URL = "https://data.vision.ee.ethz.ch/cvl/gfanelli/kinect_head_pose_db.tgz"
@@ -346,6 +359,104 @@ def copy_rgb(rgb_path: Path, output_path: Path) -> bool:
     return True
 
 
+# --------------------------------------------------------------------------- #
+# Analysis helpers (depth stats, point clouds, mesh distances)
+# --------------------------------------------------------------------------- #
+def load_intrinsics_txt(path: Path) -> Tuple[float, float, float, float]:
+    with open(path, "r", encoding="utf-8") as f:
+        parts = f.readline().strip().split()
+    fx, fy, cx, cy = map(float, parts[:4])
+    return fx, fy, cx, cy
+
+
+def depth_to_points(depth_path: Path, intrinsics: Tuple[float, float, float, float], max_points: int = 50000) -> np.ndarray:
+    fx, fy, cx, cy = intrinsics
+    depth = cv2.imread(str(depth_path), cv2.IMREAD_UNCHANGED)
+    if depth is None:
+        raise RuntimeError(f"Failed to read depth: {depth_path}")
+    depth = depth.astype(np.float32)
+    mask = depth > 0
+    ys, xs = np.nonzero(mask)
+    zs = depth[mask]
+    if zs.size == 0:
+        return np.empty((0, 3), dtype=np.float32)
+    # Convert mm -> meters if values look large
+    if zs.max() > 20.0:
+        zs = zs / 1000.0
+    xs_f = (xs - cx) * zs / fx
+    ys_f = (ys - cy) * zs / fy
+    pts = np.stack([xs_f, ys_f, zs], axis=1)
+    if pts.shape[0] > max_points:
+        idx = np.random.choice(pts.shape[0], max_points, replace=False)
+        pts = pts[idx]
+    return pts
+
+
+def save_pointcloud_ply(points: np.ndarray, path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("ply\nformat ascii 1.0\n")
+        f.write(f"element vertex {points.shape[0]}\n")
+        f.write("property float x\nproperty float y\nproperty float z\n")
+        f.write("end_header\n")
+        for p in points:
+            f.write(f"{p[0]:.6f} {p[1]:.6f} {p[2]:.6f}\n")
+
+
+def save_depth_vis(depth_path: Path, out_path: Path) -> Dict[str, float]:
+    depth = cv2.imread(str(depth_path), cv2.IMREAD_UNCHANGED)
+    if depth is None:
+        raise RuntimeError(f"Failed to read depth: {depth_path}")
+    depth_f = depth.astype(np.float32)
+    mask = depth_f > 0
+    stats = {
+        "min": float(depth_f[mask].min()) if mask.any() else 0.0,
+        "max": float(depth_f[mask].max()) if mask.any() else 0.0,
+        "mean": float(depth_f[mask].mean()) if mask.any() else 0.0,
+        "std": float(depth_f[mask].std()) if mask.any() else 0.0,
+    }
+    norm = np.zeros_like(depth_f, dtype=np.uint8)
+    if mask.any():
+        cv2.normalize(depth_f, norm, 0, 255, cv2.NORM_MINMAX)
+    vis = cv2.applyColorMap(norm, cv2.COLORMAP_JET)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    cv2.imwrite(str(out_path), vis)
+    return stats
+
+
+def load_mesh_vertices(ply_path: Path) -> np.ndarray:
+    with open(ply_path, "r", encoding="utf-8", errors="ignore") as f:
+        lines = f.readlines()
+    if not lines or not lines[0].strip().startswith("ply"):
+        return np.empty((0, 3), dtype=np.float32)
+    num_vertices = 0
+    header_end = 0
+    for i, line in enumerate(lines):
+        if line.startswith("element vertex"):
+            num_vertices = int(line.split()[2])
+        if line.strip() == "end_header":
+            header_end = i + 1
+            break
+    verts = []
+    for line in lines[header_end : header_end + num_vertices]:
+        parts = line.strip().split()
+        if len(parts) >= 3:
+            verts.append([float(parts[0]), float(parts[1]), float(parts[2])])
+    return np.asarray(verts, dtype=np.float32)
+
+
+def compute_cloud_to_mesh_rmse(cloud: np.ndarray, mesh: np.ndarray, sample: int = 20000) -> float:
+    if cloud.shape[0] == 0 or mesh.shape[0] == 0 or not _HAS_CKDTREE:
+        return float("nan")
+    if cloud.shape[0] > sample:
+        idx = np.random.choice(cloud.shape[0], sample, replace=False)
+        cloud = cloud[idx]
+    tree = cKDTree(mesh)
+    dists, _ = tree.query(cloud, k=1)
+    rmse = float(np.sqrt(np.mean(dists ** 2)))
+    return rmse
+
+
 def find_rgb_depth_pairs(seq_dir: Path) -> List[Tuple[Path, Path]]:
     """
     Discover matching RGB/depth files inside a Biwi sequence directory.
@@ -465,6 +576,20 @@ def detect_landmarks(image_path: Path, method: str = "mediapipe") -> Optional[Li
         face = max(faces, key=lambda r: r.width() * r.height())
         shape = predictor(gray, face)
         return [(shape.part(i).x, shape.part(i).y) for i in range(68)]
+    if method == "face_alignment":
+        if not _FA_AVAILABLE:
+            logging.warning("face-alignment not available, skipping landmarks for %s", image_path)
+            return None
+        img = cv2.imread(str(image_path))
+        if img is None:
+            logging.warning("Could not read image for landmarks: %s", image_path)
+            return None
+        fa = face_alignment.FaceAlignment(face_alignment.LandmarksType.TWO_D, device="cpu", flip_input=False)
+        preds = fa.get_landmarks_from_image(img[..., ::-1])  # expects RGB
+        if not preds:
+            logging.warning("No face detected for %s", image_path)
+            return None
+        return [(int(x), int(y)) for x, y in preds[0]]
     logging.warning("Unknown landmark method: %s", method)
     return None
 
@@ -542,9 +667,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--recon-binary", type=Path, default=DEFAULT_RECON_BIN, help="Path to reconstruction binary.")
     parser.add_argument("--model-dir", type=Path, default=DEFAULT_MODEL_DIR, help="Model directory for reconstruction.")
     parser.add_argument("--intrinsics", type=float, nargs=4, metavar=("FX", "FY", "CX", "CY"), help="Override intrinsics.")
-    parser.add_argument("--landmarks", choices=["none", "mediapipe", "dlib"], default="mediapipe", help="Landmark detector.")
+    parser.add_argument("--landmarks", choices=["none", "mediapipe", "dlib", "face_alignment"], default="mediapipe", help="Landmark detector.")
     parser.add_argument("--log-level", type=str, default="INFO", help="Logging level.")
     parser.add_argument("--timeout", type=int, default=60, help="Seconds before reconstruction command is aborted.")
+    parser.add_argument("--analysis-root", type=Path, default=Path("outputs/analysis"), help="Root dir for analysis artifacts.")
+    parser.add_argument("--save-pointclouds", action="store_true", help="Export point clouds for reconstructed frames.")
+    parser.add_argument("--save-depth-vis", action="store_true", help="Export colorized depth for reconstructed frames.")
+    parser.add_argument("--save-metrics", action="store_true", help="Compute cloud->mesh RMSE and depth stats JSON.")
     return parser
 
 
@@ -558,6 +687,7 @@ def orchestrate(args: argparse.Namespace) -> Dict:
     landmarks_root = args.output_root / "landmarks"
     meshes_root = args.output_root / "meshes"
     overlays_root = args.output_root / "overlays"
+    analysis_root = args.analysis_root
 
     # 1. Download
     if args.skip_download:
@@ -631,6 +761,7 @@ def orchestrate(args: argparse.Namespace) -> Dict:
 
     # 5. Reconstruction
     recon_reports = []
+    metrics: Dict[str, Dict[str, Dict[str, float]]] = {}
     if not args.skip_reconstruct:
         for seq_report in conversion_reports:
             seq_dir = Path(seq_report["output_dir"])
@@ -643,9 +774,42 @@ def orchestrate(args: argparse.Namespace) -> Dict:
                 mesh_out = meshes_root / seq_dir.name / f"{frame.stem}.ply"
                 ok = run_reconstruction(args.recon_binary, args.model_dir, intrinsics_path, frame, depth_frame, mesh_out, args.timeout)
                 recon_reports.append({"sequence": seq_dir.name, "frame": frame.name, "mesh": str(mesh_out), "success": ok})
+                if ok and (args.save_pointclouds or args.save_depth_vis or args.save_metrics):
+                    try:
+                        intr_tuple = load_intrinsics_txt(intrinsics_path)
+                        cloud = depth_to_points(depth_frame, intr_tuple)
+                        entry: Dict[str, float] = {}
+                        if args.save_pointclouds:
+                            pc_out = analysis_root / "pointclouds" / seq_dir.name / f"{frame.stem}.ply"
+                            save_pointcloud_ply(cloud, pc_out)
+                            entry["cloud_points"] = int(cloud.shape[0])
+                        if args.save_depth_vis:
+                            vis_out = analysis_root / "depth_vis" / seq_dir.name / f"{frame.stem}.png"
+                            stats = save_depth_vis(depth_frame, vis_out)
+                            entry.update({
+                                "depth_min": stats["min"],
+                                "depth_max": stats["max"],
+                                "depth_mean": stats["mean"],
+                                "depth_std": stats["std"],
+                            })
+                        if args.save_metrics:
+                            verts = load_mesh_vertices(mesh_out)
+                            rmse = compute_cloud_to_mesh_rmse(cloud, verts)
+                            entry["rmse_cloud_mesh_m"] = rmse
+                        if entry:
+                            metrics.setdefault(seq_dir.name, {})[frame.stem] = entry
+                    except Exception as exc:  # pragma: no cover
+                        logging.warning("Analysis failed for %s %s: %s", seq_dir.name, frame.name, exc)
     else:
         logging.info("Reconstruction skipped.")
     summary["steps"].append({"reconstruction": recon_reports})
+
+    if metrics:
+        metrics_path = analysis_root / "metrics.json"
+        metrics_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(metrics_path, "w", encoding="utf-8") as f:
+            json.dump(metrics, f, indent=2)
+        logging.info("Saved analysis metrics to %s", metrics_path)
 
     summary["finished_at"] = time.time()
     summary_path = args.output_root / "logs" / "pipeline_summary.json"
