@@ -1,3 +1,10 @@
+/**
+ * Camera Intrinsics
+ * 
+ * Manages camera intrinsic parameters (fx, fy, cx, cy).
+ * Used for 3D backprojection and projection operations.
+ */
+
 #include "camera/CameraIntrinsics.h"
 #include <fstream>
 #include <sstream>

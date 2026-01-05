@@ -1,14 +1,35 @@
-#include <iostream>
-#include <string>
-#include <vector>
-#include <fstream>
-#include <iomanip>
+/**
+ * Face Reconstruction Tool
+ * 
+ * Main 3D face reconstruction executable called by Python pipeline.
+ * Reconstructs 3D face meshes from RGB-D data using a PCA morphable model.
+ * 
+ * Pipeline Step: ReconstructionStep (Python)
+ * 
+ * Usage:
+ *   build/bin/face_reconstruction --rgb <path> --depth <path> \
+ *                                  --intrinsics <path> --model-dir <path> \
+ *                                  --output-mesh <path> [--output-pointcloud <path>]
+ * 
+ * Example:
+ *   build/bin/face_reconstruction --rgb outputs/converted/01/rgb/frame_00000.png \
+ *                                  --depth outputs/converted/01/depth/frame_00000.png \
+ *                                  --intrinsics outputs/converted/01/intrinsics.txt \
+ *                                  --model-dir data/model_biwi \
+ *                                  --output-mesh outputs/meshes/01/frame_00000.ply
+ */
+
 #include "data/RGBDFrame.h"
 #include "camera/CameraIntrinsics.h"
 #include "utils/DepthUtils.h"
 #include "model/MorphableModel.h"
 #include "landmarks/LandmarkData.h"
 #include "alignment/Procrustes.h"
+#include <iostream>
+#include <string>
+#include <vector>
+#include <fstream>
+#include <iomanip>
 
 using namespace face_reconstruction;
 
@@ -93,7 +114,7 @@ int main(int argc, char* argv[]) {
         }
     }
     
-    std::cout << "=== 3D Face Reconstruction - Real Data Test ===\n" << std::endl;
+    std::cout << "=== 3D Face Reconstruction ===\n" << std::endl;
     
     // Load RGB-D frame
     RGBDFrame frame;
@@ -229,6 +250,6 @@ int main(int argc, char* argv[]) {
         }
     }
     
-    std::cout << "\n=== Test completed successfully ===" << std::endl;
+    std::cout << "\n=== Reconstruction completed successfully ===" << std::endl;
     return 0;
 }

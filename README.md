@@ -22,7 +22,7 @@ face_reconstruction/
 │   └── alignment/
 │       └── Procrustes.h
 ├── src/                    # Implementation files
-│   ├── main.cpp
+│   ├── demo.cpp
 │   ├── camera/
 │   ├── data/
 │   ├── utils/
@@ -84,13 +84,13 @@ make -j4
 
 **Quick test script:**
 ```bash
-./scripts/test_real_data.sh data/test/rgb.png data/test/depth.png \
+./scripts/face_reconstruction.sh data/test/rgb.png data/test/depth.png \
     data/test/intrinsics.txt data/model data/test
 ```
 
 **Manual test:**
 ```bash
-./bin/test_real_data --rgb data/rgb.png --depth data/depth.png \
+./bin/face_reconstruction --rgb data/rgb.png --depth data/depth.png \
     --intrinsics data/intrinsics.txt --model-dir data/model \
     --landmarks data/landmarks.txt --output-mesh output/face.ply
 ```

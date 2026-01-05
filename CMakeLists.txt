@@ -73,16 +73,24 @@ set(HEADERS
     include/rendering/DepthRenderer.h
 )
 
-# Main executable
+# Demo executable (component demonstration)
 add_executable(${PROJECT_NAME}
-    src/main.cpp
+    src/demo.cpp
     ${SOURCES}
     ${HEADERS}
 )
 
-# Test executable for real data
-add_executable(test_real_data
-    tests/test_real_data.cpp
+# Pipeline Tools (called by Python pipeline)
+# Production face reconstruction tool
+add_executable(face_reconstruction
+    src/tools/face_reconstruction.cpp
+    ${SOURCES}
+    ${HEADERS}
+)
+
+# Pose initialization tool (Procrustes alignment)
+add_executable(pose_init
+    src/tools/pose_init.cpp
     ${SOURCES}
     ${HEADERS}
 )
@@ -139,6 +147,23 @@ add_executable(test_depth_residuals
     ${HEADERS}
 )
 
+# Pipeline Tools: Mapping Validation
+add_executable(validate_mapping
+    src/tools/validate_mapping.cpp
+    src/model/MorphableModel.cpp
+    src/alignment/LandmarkMapping.cpp
+    ${HEADERS}
+)
+
+# Pipeline Tools: Analysis (RMSE, depth stats, visualization)
+add_executable(analysis
+    src/tools/analysis.cpp
+    src/data/RGBDFrame.cpp
+    src/camera/CameraIntrinsics.cpp
+    src/utils/DepthUtils.cpp
+    ${HEADERS}
+)
+
 # Week 3 - STEP 5: ICP Validation
 add_executable(test_icp_validation
     tests/test_icp_validation.cpp
@@ -151,7 +176,11 @@ target_link_libraries(${PROJECT_NAME}
     Eigen3::Eigen
 )
 
-target_link_libraries(test_real_data
+target_link_libraries(face_reconstruction
+    Eigen3::Eigen
+)
+
+target_link_libraries(pose_init
     Eigen3::Eigen
 )
 
@@ -187,9 +216,18 @@ target_link_libraries(test_icp_validation
     Eigen3::Eigen
 )
 
+target_link_libraries(validate_mapping
+    Eigen3::Eigen
+)
+
+target_link_libraries(analysis
+    Eigen3::Eigen
+)
+
 if(OpenCV_FOUND)
     target_link_libraries(${PROJECT_NAME} ${OpenCV_LIBS})
-    target_link_libraries(test_real_data ${OpenCV_LIBS})
+    target_link_libraries(face_reconstruction ${OpenCV_LIBS})
+    target_link_libraries(pose_init ${OpenCV_LIBS})
     target_link_libraries(test_depth_lifting ${OpenCV_LIBS})
     target_link_libraries(test_landmarks_io ${OpenCV_LIBS})
     target_link_libraries(test_pose_init ${OpenCV_LIBS})
@@ -197,8 +235,10 @@ if(OpenCV_FOUND)
     target_link_libraries(test_depth_renderer ${OpenCV_LIBS})
     target_link_libraries(test_depth_residuals ${OpenCV_LIBS})
     target_link_libraries(test_icp_validation ${OpenCV_LIBS})
+    target_link_libraries(analysis ${OpenCV_LIBS})
     target_include_directories(${PROJECT_NAME} PUBLIC ${OpenCV_INCLUDE_DIRS})
-    target_include_directories(test_real_data PUBLIC ${OpenCV_INCLUDE_DIRS})
+    target_include_directories(face_reconstruction PUBLIC ${OpenCV_INCLUDE_DIRS})
+    target_include_directories(pose_init PUBLIC ${OpenCV_INCLUDE_DIRS})
     target_include_directories(test_depth_lifting PUBLIC ${OpenCV_INCLUDE_DIRS})
     target_include_directories(test_landmarks_io PUBLIC ${OpenCV_INCLUDE_DIRS})
     target_include_directories(test_pose_init PUBLIC ${OpenCV_INCLUDE_DIRS})
@@ -206,10 +246,12 @@ if(OpenCV_FOUND)
     target_include_directories(test_depth_renderer PUBLIC ${OpenCV_INCLUDE_DIRS})
     target_include_directories(test_depth_residuals PUBLIC ${OpenCV_INCLUDE_DIRS})
     target_include_directories(test_icp_validation PUBLIC ${OpenCV_INCLUDE_DIRS})
+    target_include_directories(analysis PUBLIC ${OpenCV_INCLUDE_DIRS})
 else()
     # Add dummy OpenCV defines to allow code to compile
     target_compile_definitions(${PROJECT_NAME} PRIVATE OPENCV_NOT_FOUND)
-    target_compile_definitions(test_real_data PRIVATE OPENCV_NOT_FOUND)
+    target_compile_definitions(face_reconstruction PRIVATE OPENCV_NOT_FOUND)
+    target_compile_definitions(pose_init PRIVATE OPENCV_NOT_FOUND)
     target_compile_definitions(test_depth_lifting PRIVATE OPENCV_NOT_FOUND)
     target_compile_definitions(test_landmarks_io PRIVATE OPENCV_NOT_FOUND)
     target_compile_definitions(test_pose_init PRIVATE OPENCV_NOT_FOUND)
@@ -217,6 +259,7 @@ else()
     target_compile_definitions(test_depth_renderer PRIVATE OPENCV_NOT_FOUND)
     target_compile_definitions(test_depth_residuals PRIVATE OPENCV_NOT_FOUND)
     target_compile_definitions(test_icp_validation PRIVATE OPENCV_NOT_FOUND)
+    target_compile_definitions(analysis PRIVATE OPENCV_NOT_FOUND)
     message(WARNING "Compiling without OpenCV - RGB-D features will not work")
 endif()
 
@@ -225,7 +268,11 @@ target_include_directories(${PROJECT_NAME} PUBLIC
     ${CMAKE_SOURCE_DIR}/include
 )
 
-target_include_directories(test_real_data PUBLIC
+target_include_directories(face_reconstruction PUBLIC
+    ${CMAKE_SOURCE_DIR}/include
+)
+
+target_include_directories(pose_init PUBLIC
     ${CMAKE_SOURCE_DIR}/include
 )
 
@@ -265,7 +312,8 @@ target_include_directories(test_icp_validation PUBLIC
 # Compiler options
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
     target_compile_options(${PROJECT_NAME} PRIVATE -Wall -Wextra)
-    target_compile_options(test_real_data PRIVATE -Wall -Wextra)
+    target_compile_options(face_reconstruction PRIVATE -Wall -Wextra)
+    target_compile_options(pose_init PRIVATE -Wall -Wextra)
     target_compile_options(test_depth_lifting PRIVATE -Wall -Wextra)
     target_compile_options(test_pca_coeffs PRIVATE -Wall -Wextra)
     target_compile_options(test_landmarks_io PRIVATE -Wall -Wextra)
@@ -279,7 +327,8 @@ endif()
 # Debug info
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
     target_compile_definitions(${PROJECT_NAME} PRIVATE DEBUG=1)
-    target_compile_definitions(test_real_data PRIVATE DEBUG=1)
+    target_compile_definitions(face_reconstruction PRIVATE DEBUG=1)
+    target_compile_definitions(pose_init PRIVATE DEBUG=1)
     target_compile_definitions(test_depth_lifting PRIVATE DEBUG=1)
     target_compile_definitions(test_pca_coeffs PRIVATE DEBUG=1)
     target_compile_definitions(test_landmarks_io PRIVATE DEBUG=1)

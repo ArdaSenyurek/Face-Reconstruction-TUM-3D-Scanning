@@ -1,3 +1,10 @@
+/**
+ * Depth Utilities
+ * 
+ * Depth backprojection: converts depth images to 3D point clouds.
+ * Used by all tools that process RGB-D data.
+ */
+
 #include "utils/DepthUtils.h"
 #include <cmath>
 

@@ -126,7 +126,7 @@ int main(int argc, char* argv[]) {
     if (!mapping.loadFromFile(mapping_file)) {
         std::cerr << "ERROR: Failed to load mapping file: " << mapping_file << std::endl;
         std::cerr << "Mapping file is required for STEP 2. Create it using:" << std::endl;
-        std::cerr << "  python scripts/create_landmark_mapping.py data/model data/landmark_mapping.txt" << std::endl;
+        std::cerr << "  python scripts/utils/create_landmark_mapping.py --output data/landmark_mapping.txt --pairs \"...\"" << std::endl;
         return 1;
     }
     

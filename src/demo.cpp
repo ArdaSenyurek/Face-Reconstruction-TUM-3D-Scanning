@@ -1,16 +1,28 @@
-#include <iostream>
-#include <string>
+/**
+ * Component Demonstration Tool
+ * 
+ * Demonstrates individual library components (not used in main pipeline).
+ * Useful for testing and understanding each component in isolation.
+ * 
+ * Usage:
+ *   build/bin/FaceReconstruction
+ * 
+ * Note: This is a demo/example tool, not part of the production pipeline.
+ */
+
 #include "data/RGBDFrame.h"
 #include "camera/CameraIntrinsics.h"
 #include "utils/DepthUtils.h"
 #include "model/MorphableModel.h"
 #include "landmarks/LandmarkData.h"
 #include "alignment/Procrustes.h"
+#include <iostream>
+#include <string>
 
 using namespace face_reconstruction;
 
 int main(int argc, char* argv[]) {
-    std::cout << "=== 3D Face Reconstruction - Week 1 Test ===" << std::endl;
+    std::cout << "=== 3D Face Reconstruction - Component Demo ===" << std::endl;
     
     // Example 1: Load RGB-D frame
     std::cout << "\n[1] Testing RGB-D Frame Loading..." << std::endl;
@@ -100,7 +112,7 @@ int main(int argc, char* argv[]) {
     std::cout << "  Test: (" << test_point.transpose() << ") -> (" 
               << transformed.transpose() << ")" << std::endl;
     
-    std::cout << "\n=== All tests completed ===" << std::endl;
+    std::cout << "\n=== Demo completed ===" << std::endl;
     
     return 0;
 }
