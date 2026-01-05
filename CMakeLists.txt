@@ -82,7 +82,7 @@ add_executable(${PROJECT_NAME}
 
 # Test executable for real data
 add_executable(test_real_data
-    src/test_real_data.cpp
+    tests/test_real_data.cpp
     ${SOURCES}
     ${HEADERS}
 )
@@ -90,7 +90,7 @@ add_executable(test_real_data
 # Week 2 Test Executables
 # STEP A: Depth Lifting Test
 add_executable(test_depth_lifting
-    src/test_depth_lifting.cpp
+    tests/test_depth_lifting.cpp
     ${SOURCES}
     ${HEADERS}
 )
@@ -100,48 +100,48 @@ set(PCA_SOURCES
     src/model/MorphableModel.cpp
 )
 add_executable(test_pca_coeffs
-    src/test_pca_coeffs.cpp
+    tests/test_pca_coeffs.cpp
     ${PCA_SOURCES}
 )
 
 # STEP C: Landmark I/O Test
 add_executable(test_landmarks_io
-    src/test_landmarks_io.cpp
+    tests/test_landmarks_io.cpp
     ${SOURCES}
     ${HEADERS}
 )
 
 # STEP D: Pose Initialization Test
 add_executable(test_pose_init
-    src/test_pose_init.cpp
+    tests/test_pose_init.cpp
     ${SOURCES}
     ${HEADERS}
 )
 
 # Week 3 - STEP 1: Landmark Mapping Validation
 add_executable(test_landmark_mapping
-    src/test_landmark_mapping.cpp
+    tests/test_landmark_mapping.cpp
     ${SOURCES}
     ${HEADERS}
 )
 
 # Week 3 - STEP 3: Depth Renderer Test
 add_executable(test_depth_renderer
-    src/test_depth_renderer.cpp
+    tests/test_depth_renderer.cpp
     ${SOURCES}
     ${HEADERS}
 )
 
 # Week 3 - STEP 4: Depth Residual Computation
 add_executable(test_depth_residuals
-    src/test_depth_residuals.cpp
+    tests/test_depth_residuals.cpp
     ${SOURCES}
     ${HEADERS}
 )
 
 # Week 3 - STEP 5: ICP Validation
 add_executable(test_icp_validation
-    src/test_icp_validation.cpp
+    tests/test_icp_validation.cpp
     ${SOURCES}
     ${HEADERS}
 )
