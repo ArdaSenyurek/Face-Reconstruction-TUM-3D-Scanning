@@ -1,0 +1,138 @@
+#!/usr/bin/env python3
+"""
+Legacy heuristic mapper: dlib 68-point landmarks -> model vertices using mean shape geometry.
+"""
+from __future__ import annotations
+
+import os
+import struct
+import sys
+from typing import Dict
+
+import numpy as np
+
+
+def load_binary_vector(filepath: str) -> np.ndarray:
+    with open(filepath, "rb") as f:
+        data = f.read()
+    num_elements = len(data) // 8
+    values = struct.unpack("d" * num_elements, data)
+    return np.array(values, dtype=np.float64)
+
+
+def load_mean_shape(model_dir: str) -> np.ndarray:
+    bin_path = os.path.join(model_dir, "mean_shape.bin")
+    txt_path = os.path.join(model_dir, "mean_shape.txt")
+    if os.path.exists(bin_path):
+        mean_shape = load_binary_vector(bin_path)
+    elif os.path.exists(txt_path):
+        mean_shape = np.loadtxt(txt_path)
+    else:
+        raise FileNotFoundError(f"Mean shape not found in {model_dir}")
+    num_vertices = len(mean_shape) // 3
+    return mean_shape.reshape(num_vertices, 3)
+
+
+def identify_landmark_vertices(vertices: np.ndarray) -> Dict[int, int]:
+    mapping: Dict[int, int] = {}
+    min_x, max_x = vertices[:, 0].min(), vertices[:, 0].max()
+    min_y, max_y = vertices[:, 1].min(), vertices[:, 1].max()
+    min_z, max_z = vertices[:, 2].min(), vertices[:, 2].max()
+    center_x = (min_x + max_x) / 2
+    # Nose tip (30): max Z
+    nose_tip_idx = int(np.argmax(vertices[:, 2]))
+    mapping[30] = nose_tip_idx
+    eye_level = vertices[nose_tip_idx, 1] + 0.02
+    # Left eye corner (36)
+    eye_candidates = vertices[
+        (vertices[:, 1] > eye_level - 0.02) & (vertices[:, 1] < eye_level + 0.02) & (vertices[:, 0] < center_x)
+    ]
+    if len(eye_candidates) > 0:
+        left_eye_idx = np.argmin(eye_candidates[:, 0])
+        for i, v in enumerate(vertices):
+            if np.allclose(v, eye_candidates[left_eye_idx]):
+                mapping[36] = i
+                break
+    # Right eye corner (45)
+    eye_candidates = vertices[
+        (vertices[:, 1] > eye_level - 0.02) & (vertices[:, 1] < eye_level + 0.02) & (vertices[:, 0] > center_x)
+    ]
+    if len(eye_candidates) > 0:
+        right_eye_idx = np.argmax(eye_candidates[:, 0])
+        for i, v in enumerate(vertices):
+            if np.allclose(v, eye_candidates[right_eye_idx]):
+                mapping[45] = i
+                break
+    # Mouth corners
+    mouth_level = vertices[nose_tip_idx, 1] - 0.03
+    mouth_candidates = vertices[
+        (vertices[:, 1] > mouth_level - 0.02) & (vertices[:, 1] < mouth_level + 0.02) & (vertices[:, 0] < center_x)
+    ]
+    if len(mouth_candidates) > 0:
+        left_mouth_idx = np.argmin(mouth_candidates[:, 0])
+        for i, v in enumerate(vertices):
+            if np.allclose(v, mouth_candidates[left_mouth_idx]):
+                mapping[48] = i
+                break
+    mouth_candidates = vertices[
+        (vertices[:, 1] > mouth_level - 0.02) & (vertices[:, 1] < mouth_level + 0.02) & (vertices[:, 0] > center_x)
+    ]
+    if len(mouth_candidates) > 0:
+        right_mouth_idx = np.argmax(mouth_candidates[:, 0])
+        for i, v in enumerate(vertices):
+            if np.allclose(v, mouth_candidates[right_mouth_idx]):
+                mapping[54] = i
+                break
+    # Chin (8)
+    chin_idx = int(np.argmin(vertices[:, 1]))
+    mapping[8] = chin_idx
+    # Jaw left/right (4,12)
+    jaw_level = vertices[chin_idx, 1] + 0.01
+    jaw_candidates = vertices[
+        (vertices[:, 1] > jaw_level - 0.02) & (vertices[:, 1] < jaw_level + 0.02) & (vertices[:, 0] < center_x)
+    ]
+    if len(jaw_candidates) > 0:
+        left_jaw_idx = np.argmin(jaw_candidates[:, 0])
+        for i, v in enumerate(vertices):
+            if np.allclose(v, jaw_candidates[left_jaw_idx]):
+                mapping[4] = i
+                break
+    jaw_candidates = vertices[
+        (vertices[:, 1] > jaw_level - 0.02) & (vertices[:, 1] < jaw_level + 0.02) & (vertices[:, 0] > center_x)
+    ]
+    if len(jaw_candidates) > 0:
+        right_jaw_idx = np.argmax(jaw_candidates[:, 0])
+        for i, v in enumerate(vertices):
+            if np.allclose(v, jaw_candidates[right_jaw_idx]):
+                mapping[12] = i
+                break
+    return mapping
+
+
+def main() -> int:
+    if len(sys.argv) < 3:
+        print("Usage: python heuristic_create_landmark_mapping.py <model_dir> <output_mapping.txt>")
+        return 1
+    model_dir = sys.argv[1]
+    output_file = sys.argv[2]
+    print("=== Heuristic Landmark Mapping ===")
+    print(f"Model dir: {model_dir}")
+    vertices = load_mean_shape(model_dir)
+    print(f"Loaded {len(vertices)} vertices")
+    mapping = identify_landmark_vertices(vertices)
+    if len(mapping) < 6:
+        print(f"WARNING: Only {len(mapping)} landmarks identified; consider manual edits.")
+    with open(output_file, "w", encoding="utf-8") as f:
+        f.write("# Landmark to Model Vertex Mapping\n")
+        f.write("# Format: landmark_index model_vertex_index\n")
+        f.write("# Generated by heuristic_create_landmark_mapping.py\n\n")
+        for landmark_idx in sorted(mapping.keys()):
+            f.write(f"{landmark_idx} {mapping[landmark_idx]}\n")
+    print(f"✓ Saved {len(mapping)} mappings to {output_file}")
+    print("Next: review the mapping and run test_landmark_mapping to visualize.")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+
