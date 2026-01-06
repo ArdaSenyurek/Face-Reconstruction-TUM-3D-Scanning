@@ -1,17 +1,15 @@
 """
-Download and extraction step for the Biwi dataset.
+Download step for the Biwi dataset using kagglehub.
 """
 
-import subprocess
-import tarfile
+import shutil
 from pathlib import Path
-from typing import List
 
-from pipeline import PipelineStep, StepResult, StepStatus, extract_zip_find_tgz, get_ssl_context, http_get
+from pipeline import PipelineStep, StepResult, StepStatus
 
 
 class DownloadStep(PipelineStep):
-    """Download and extract the Biwi Kinect Head Pose dataset."""
+    """Download the Biwi Kinect Head Pose dataset using kagglehub."""
     
     @property
     def name(self) -> str:
@@ -19,125 +17,134 @@ class DownloadStep(PipelineStep):
     
     @property
     def description(self) -> str:
-        return "Download and extract Biwi dataset"
+        return "Download Biwi dataset using kagglehub"
     
     def execute(self) -> StepResult:
-        """Download and extract the dataset."""
-        download_dir = Path(self.config["download_dir"])
-        dataset_urls = self.config.get("dataset_urls", [])
-        kaggle_dataset = self.config.get("kaggle_dataset")
-        force = self.config.get("force", False)
+        """Download the dataset using kagglehub."""
         skip = self.config.get("skip", False)
         
         if skip:
             # Check for existing extracted data
+            download_dir = Path(self.config.get("download_dir", "data/biwi_download"))
             extract_root = download_dir / "hpdb"
             preexisting_faces = download_dir / "faces_0"
+            
             if extract_root.exists():
                 return StepResult(StepStatus.SUCCESS, f"Using existing data at {extract_root}", 
-                               {"archive_path": extract_root})
+                               {"extract_root": str(extract_root)})
             if preexisting_faces.exists():
                 return StepResult(StepStatus.SUCCESS, f"Using existing data at {preexisting_faces}",
-                               {"archive_path": preexisting_faces})
+                               {"extract_root": str(preexisting_faces)})
             return StepResult(StepStatus.SKIPPED, "No existing data found and download skipped")
         
-        # Download
-        archive_path = download_dir / "kinect_head_pose_db.tgz"
+        try:
+            import kagglehub
+        except ImportError:
+            return StepResult(
+                StepStatus.FAILED,
+                "kagglehub not installed. Install with: pip install kagglehub",
+                {}
+            )
         
-        if archive_path.exists() and not force:
-            self.logger.info(f"Dataset archive already exists at {archive_path}")
-        else:
-            if kaggle_dataset:
-                archive_path = self._download_from_kaggle(kaggle_dataset, download_dir)
-            else:
-                archive_path = self._download_from_urls(dataset_urls, download_dir, force)
-        
-        # Extract
-        extract_root = self._extract_dataset(archive_path, download_dir)
-        
-        return StepResult(StepStatus.SUCCESS, f"Dataset ready at {extract_root}",
-                        {"archive_path": archive_path, "extract_root": str(extract_root)})
-    
-    def _download_from_urls(self, urls: List[str], download_dir: Path, force: bool) -> Path:
-        """Download from a list of URLs."""
-        download_dir.mkdir(parents=True, exist_ok=True)
-        archive_path = download_dir / "kinect_head_pose_db.tgz"
-        
-        ssl_ctx = get_ssl_context()
-        last_err = None
-        
-        for url in urls:
-            self.logger.info(f"Downloading from {url}")
-            try:
-                http_get(url, archive_path, ssl_ctx)
-                size_mb = archive_path.stat().st_size / 1e6
-                self.logger.info(f"Download complete: {archive_path} ({size_mb:.2f} MB)")
-                return archive_path
-            except Exception as exc:
-                last_err = exc
-                self.logger.warning(f"Download failed from {url}: {exc}")
-        
-        raise RuntimeError(f"All dataset URLs failed: {last_err}")
-    
-    def _download_from_kaggle(self, dataset: str, download_dir: Path) -> Path:
-        """Download from Kaggle using CLI."""
+        # Get target directory in project
+        download_dir = Path(self.config.get("download_dir", "data/biwi_download"))
         download_dir.mkdir(parents=True, exist_ok=True)
         
-        cmd = [
-            "kaggle", "datasets", "download", "-d", dataset,
-            "-p", str(download_dir), "--force"
-        ]
+        # Download dataset using kagglehub
+        dataset_id = self.config.get("kaggle_dataset", "kmader/biwi-kinect-head-pose-database")
         
         try:
-            self.logger.info(f"Downloading from Kaggle ({dataset})...")
-            subprocess.run(cmd, check=True, capture_output=True, text=True)
-        except FileNotFoundError:
-            raise RuntimeError("kaggle CLI not found. Install with `pip install kaggle`")
-        except subprocess.CalledProcessError as exc:
-            raise RuntimeError(f"Kaggle download failed: {exc.stderr}")
-        
-        candidates = sorted(download_dir.glob("*.zip"), key=lambda p: p.stat().st_mtime, reverse=True)
-        if not candidates:
-            raise RuntimeError("Kaggle download did not produce a zip file")
-        
-        return candidates[0]
+            self.logger.info(f"Downloading dataset from Kaggle: {dataset_id}")
+            cache_path = kagglehub.dataset_download(dataset_id)
+            self.logger.info(f"Dataset downloaded to cache: {cache_path}")
+            
+            # Convert to Path and find the actual dataset root in cache
+            cache_dataset_path = Path(cache_path)
+            
+            # Find the dataset root (hpdb or faces_0) in cache
+            cache_extract_root = None
+            if (cache_dataset_path / "hpdb").exists():
+                cache_extract_root = cache_dataset_path / "hpdb"
+            elif (cache_dataset_path / "faces_0").exists():
+                cache_extract_root = cache_dataset_path / "faces_0"
+            else:
+                # Check subdirectories
+                for subdir in cache_dataset_path.iterdir():
+                    if subdir.is_dir():
+                        if (subdir / "hpdb").exists():
+                            cache_extract_root = subdir / "hpdb"
+                            break
+                        elif (subdir / "faces_0").exists():
+                            cache_extract_root = subdir / "faces_0"
+                            break
+                        elif subdir.name == "hpdb" or subdir.name == "faces_0":
+                            cache_extract_root = subdir
+                            break
+                
+                # If still not found, use the path itself
+                if cache_extract_root is None:
+                    cache_extract_root = cache_dataset_path
+            
+            # Copy dataset to project data folder
+            self.logger.info(f"Copying dataset to project directory: {download_dir}")
+            
+            # Determine what to copy (hpdb or faces_0)
+            if cache_extract_root.name == "hpdb":
+                target_dir = download_dir / "hpdb"
+            elif cache_extract_root.name == "faces_0":
+                target_dir = download_dir / "faces_0"
+            else:
+                # If cache_extract_root is the dataset root, copy everything
+                target_dir = download_dir
+                cache_extract_root = cache_dataset_path
+            
+            # Remove target if it exists (to ensure clean copy)
+            if target_dir.exists():
+                self.logger.info(f"Removing existing directory: {target_dir}")
+                shutil.rmtree(target_dir)
+            
+            # Copy the dataset
+            shutil.copytree(cache_extract_root, target_dir)
+            self.logger.info(f"Dataset copied to: {target_dir}")
+            
+            # Set extract_root to the project-local path
+            extract_root = target_dir
+            
+            # Check for PLY files (for model creation)
+            ply_files = self._check_ply_files(extract_root)
+            if ply_files:
+                self.logger.info(f"Found {len(ply_files)} PLY point cloud file(s) - model can be created automatically")
+            else:
+                self.logger.warning("No PLY files found in dataset - model creation may require manual setup")
+            
+            return StepResult(
+                StepStatus.SUCCESS,
+                f"Dataset ready at {extract_root}",
+                {"extract_root": str(extract_root), "dataset_path": str(download_dir)}
+            )
+            
+        except Exception as e:
+            error_msg = f"Failed to download dataset: {e}"
+            self.logger.error(error_msg)
+            return StepResult(StepStatus.FAILED, error_msg, {"exception": str(e)})
     
-    def _extract_dataset(self, archive_path: Path, target_dir: Path) -> Path:
-        """Extract the dataset archive."""
-        target_dir.mkdir(parents=True, exist_ok=True)
-        extract_root = target_dir / "hpdb"
-        preexisting_faces = target_dir / "faces_0"
+    def _check_ply_files(self, root: Path) -> list[Path]:
+        """Check for PLY point cloud files in dataset."""
+        search_patterns = [
+            "hpdb/*/*.ply",
+            "faces_0/*/*.ply",
+            "**/*.ply",
+        ]
         
-        if extract_root.exists():
-            self.logger.info(f"Dataset already extracted at {extract_root}")
-            return extract_root
-        if preexisting_faces.exists():
-            self.logger.info(f"Dataset already extracted at {preexisting_faces}")
-            return preexisting_faces
+        ply_files = []
+        for pattern in search_patterns:
+            try:
+                found = list(root.glob(pattern))
+                ply_files.extend(found)
+            except Exception:
+                # Pattern might not match, continue
+                pass
         
-        self.logger.info(f"Extracting archive to {target_dir}")
-        
-        actual_archive = archive_path
-        if archive_path.suffix.lower() == ".zip":
-            actual_archive = extract_zip_find_tgz(archive_path, target_dir)
-        
-        if actual_archive.suffix.lower() in [".tgz", ".gz", ".tar"]:
-            with tarfile.open(actual_archive, "r:*") as tar:
-                tar.extractall(path=target_dir)
-        elif actual_archive.is_dir():
-            pass  # Already extracted
-        else:
-            raise RuntimeError(f"Unsupported archive format: {actual_archive}")
-        
-        # Detect root folder
-        if extract_root.exists():
-            return extract_root
-        if preexisting_faces.exists():
-            return preexisting_faces
-        
-        alt_faces = target_dir / "faces_0"
-        if alt_faces.exists():
-            return alt_faces
-        
-        raise RuntimeError(f"Expected extracted directory at {extract_root} or faces_0, but none was found.")
-
+        # Remove duplicates and sort
+        ply_files = sorted(set(ply_files))
+        return ply_files

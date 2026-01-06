@@ -11,12 +11,7 @@ from pipeline import (
     StepStatus,
     convert_depth_image,
     copy_rgb,
-    default_intrinsics,
-    find_rgb_depth_pairs,
-    read_biwi_calibration,
-)
-    convert_depth_image,
-    copy_rgb,
+    create_depth_visualization,
     default_intrinsics,
     find_rgb_depth_pairs,
     read_biwi_calibration,
@@ -99,15 +94,20 @@ class ConversionStep(PipelineStep):
         
         rgb_out_dir = output_dir / "rgb"
         depth_out_dir = output_dir / "depth"
+        depth_vis_dir = output_dir / "depth_vis"
         success_rgb = success_depth = 0
         
         for idx, (rgb_path, depth_path) in enumerate(pairs):
             rgb_out = rgb_out_dir / f"frame_{idx:05d}.png"
             depth_out = depth_out_dir / f"frame_{idx:05d}.png"
+            depth_vis_out = depth_vis_dir / f"frame_{idx:05d}.png"
+            
             if copy_rgb(rgb_path, rgb_out):
                 success_rgb += 1
             if convert_depth_image(depth_path, depth_out):
                 success_depth += 1
+                # Create depth visualization for better viewing
+                create_depth_visualization(depth_out, depth_vis_out)
             if (idx + 1) % 10 == 0 or idx == len(pairs) - 1:
                 self.logger.progress(idx + 1, len(pairs), f"frames in {seq_dir.name}")
         

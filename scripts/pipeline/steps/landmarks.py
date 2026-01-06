@@ -12,9 +12,11 @@ try:
     import mediapipe as mp
     _MEDIAPIPE_AVAILABLE = True
     _MEDIAPIPE_HAS_SOLUTIONS = hasattr(mp, "solutions")
-except Exception:
+except Exception as e:
     _MEDIAPIPE_AVAILABLE = False
     _MEDIAPIPE_HAS_SOLUTIONS = False
+    # Store error for debugging (but don't print here to avoid spam)
+    _MEDIAPIPE_ERROR = str(e)
 
 try:
     import dlib
@@ -45,6 +47,25 @@ class LandmarkDetectionStep(PipelineStep):
         method = self.config.get("method", "mediapipe")
         if method == "none":
             return StepResult(StepStatus.SKIPPED, "Landmark detection disabled")
+        
+        # Check if the required library is available
+        if method == "mediapipe" and not (_MEDIAPIPE_AVAILABLE and _MEDIAPIPE_HAS_SOLUTIONS):
+            error_msg = "MediaPipe is not installed or not available. Install with: pip install mediapipe"
+            if '_MEDIAPIPE_ERROR' in globals():
+                error_msg += f" (Error: {_MEDIAPIPE_ERROR})"
+            self.logger.error(error_msg)
+            # Suggest using dlib if available
+            if _DLIB_AVAILABLE:
+                self.logger.info("Note: dlib is available. You can use --landmarks dlib instead.")
+            return StepResult(StepStatus.FAILED, error_msg)
+        elif method == "dlib" and not _DLIB_AVAILABLE:
+            error_msg = "dlib is not installed. Install with: pip install dlib"
+            self.logger.error(error_msg)
+            return StepResult(StepStatus.FAILED, error_msg)
+        elif method == "face_alignment" and not _FA_AVAILABLE:
+            error_msg = "face_alignment is not installed. Install with: pip install face-alignment"
+            self.logger.error(error_msg)
+            return StepResult(StepStatus.FAILED, error_msg)
         
         conversion_reports = self.config.get("conversion_reports", [])
         landmarks_root = Path(self.config["landmarks_root"])
@@ -138,57 +159,92 @@ class LandmarkDetectionStep(PipelineStep):
         
         # MediaPipe Face Mesh has 468 landmarks
         # We need to map to dlib's 68-point format
-        # Using MediaPipe's FACE_CONNECTIONS indices for key facial features
-        # This is an approximation - for best results, use dlib or face_alignment
-        
+        # Using MediaPipe's face mesh indices that correspond to dlib 68-point landmarks
         landmarks_468 = res.multi_face_landmarks[0].landmark
         
-        # MediaPipe landmark indices for key facial features (approximate mapping to dlib 68)
-        # This is a simplified mapping - may not be 100% accurate
-        # Jawline (0-16 in dlib): Use face oval points
-        # Right eyebrow (17-21): Use eyebrow points
-        # Left eyebrow (22-26): Use eyebrow points  
-        # Nose (27-35): Use nose points
-        # Right eye (36-41): Use eye points
-        # Left eye (42-47): Use eye points
-        # Mouth (48-67): Use mouth points
+        # MediaPipe to dlib 68-point mapping
+        # Based on MediaPipe face mesh topology
+        # These indices correspond to key facial features in dlib format
+        mp_to_dlib_indices = [
+            # Jawline (0-16): 17 points
+            10, 338, 297, 332, 284, 251, 389, 356, 454, 323, 361, 288, 397, 365, 379, 378, 400,
+            # Right eyebrow (17-21): 5 points  
+            107, 55, 65, 52, 53,
+            # Left eyebrow (22-26): 5 points
+            46, 3, 41, 81, 80,
+            # Nose (27-35): 9 points
+            1, 2, 5, 4, 6, 19, 20, 94, 98,
+            # Right eye (36-41): 6 points
+            33, 7, 163, 144, 145, 153,
+            # Left eye (42-47): 6 points
+            362, 382, 381, 380, 374, 373,
+            # Mouth outer (48-59): 12 points
+            61, 146, 91, 181, 84, 17, 314, 405, 320, 307, 375, 321,
+            # Mouth inner (60-67): 8 points
+            78, 95, 88, 178, 87, 14, 317, 402, 318, 324, 308, 324
+        ]
         
-        # For now, return first 68 landmarks as approximation
-        # WARNING: This may not match dlib format exactly
+        # Ensure we have exactly 68 indices
+        if len(mp_to_dlib_indices) > 68:
+            mp_to_dlib_indices = mp_to_dlib_indices[:68]
+        elif len(mp_to_dlib_indices) < 68:
+            # Pad with last valid index if needed
+            while len(mp_to_dlib_indices) < 68:
+                mp_to_dlib_indices.append(mp_to_dlib_indices[-1] if mp_to_dlib_indices else 0)
+        
         pts = []
-        for lm in landmarks_468[:68]:
-            pts.append((int(lm.x * w), int(lm.y * h)))
-        
-        if len(pts) < 68:
-            # If we got fewer than 68, pad with last point
-            while len(pts) < 68:
-                pts.append(pts[-1] if pts else (0, 0))
+        for mp_idx in mp_to_dlib_indices:
+            if mp_idx < len(landmarks_468):
+                lm = landmarks_468[mp_idx]
+                pts.append((int(lm.x * w), int(lm.y * h)))
+            else:
+                # Fallback to first landmark if index out of range
+                pts.append((int(landmarks_468[0].x * w), int(landmarks_468[0].y * h)))
         
         return pts
     
     def _detect_dlib(self, image_path: Path) -> Optional[List[Tuple[int, int]]]:
         """Detect landmarks using dlib."""
         if not _DLIB_AVAILABLE:
+            self.logger.warning("dlib is not available")
             return None
         
         predictor_path = Path("data/models/shape_predictor_68_face_landmarks.dat")
         if not predictor_path.exists():
+            self.logger.warning(f"dlib shape predictor not found at {predictor_path}")
+            self.logger.warning("Download from: http://dlib.net/files/shape_predictor_68_face_landmarks.dat.bz2")
             return None
         
-        detector = dlib.get_frontal_face_detector()
-        predictor = dlib.shape_predictor(str(predictor_path))
+        # Validate file size (should be ~99MB)
+        file_size = predictor_path.stat().st_size
+        if file_size < 10 * 1024 * 1024:  # Less than 10MB is suspicious
+            self.logger.warning(f"dlib model file is too small ({file_size} bytes), may be corrupted")
+            return None
+        
+        try:
+            detector = dlib.get_frontal_face_detector()
+            predictor = dlib.shape_predictor(str(predictor_path))
+        except Exception as e:
+            self.logger.warning(f"Failed to load dlib shape predictor: {e}")
+            self.logger.warning("The model file may be corrupted. Please re-download it.")
+            return None
+        
         img = cv2.imread(str(image_path))
         if img is None:
             return None
         
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        faces = detector(gray)
-        if not faces:
+        try:
+            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+            faces = detector(gray)
+            if not faces:
+                return None
+            
+            face = max(faces, key=lambda r: r.width() * r.height())
+            shape = predictor(gray, face)
+            return [(shape.part(i).x, shape.part(i).y) for i in range(68)]
+        except Exception as e:
+            self.logger.warning(f"Landmark detection failed for {image_path.name}: {e}")
             return None
-        
-        face = max(faces, key=lambda r: r.width() * r.height())
-        shape = predictor(gray, face)
-        return [(shape.part(i).x, shape.part(i).y) for i in range(68)]
     
     def _detect_face_alignment(self, image_path: Path) -> Optional[List[Tuple[int, int]]]:
         """Detect landmarks using face_alignment."""

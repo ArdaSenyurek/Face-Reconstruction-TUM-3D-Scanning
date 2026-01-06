@@ -125,8 +125,9 @@ int main(int argc, char* argv[]) {
     LandmarkMapping mapping;
     if (!mapping.loadFromFile(mapping_file)) {
         std::cerr << "ERROR: Failed to load mapping file: " << mapping_file << std::endl;
-        std::cerr << "Mapping file is required for STEP 2. Create it using:" << std::endl;
-        std::cerr << "  python scripts/utils/create_landmark_mapping.py --output data/landmark_mapping.txt --pairs \"...\"" << std::endl;
+        std::cerr << "Mapping file is required for STEP 2. Generate it using:" << std::endl;
+        std::cerr << "  build/bin/validate_mapping --mapping " << mapping_file << " --model-dir <model_dir> --create-default" << std::endl;
+        std::cerr << "Or run the pipeline which auto-generates it." << std::endl;
         return 1;
     }
     
