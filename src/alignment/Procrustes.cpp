@@ -1,3 +1,10 @@
+/**
+ * Procrustes Alignment
+ * 
+ * Estimates similarity transform (scale, rotation, translation) between two 3D point sets.
+ * Used for pose initialization in pose_init tool.
+ */
+
 #include "alignment/Procrustes.h"
 #include <cmath>
 #include <algorithm>

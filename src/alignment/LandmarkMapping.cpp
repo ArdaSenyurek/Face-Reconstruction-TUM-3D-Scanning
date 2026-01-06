@@ -1,3 +1,10 @@
+/**
+ * Landmark Mapping
+ * 
+ * Manages correspondence between 2D landmark indices and 3D model vertex indices.
+ * Used by pose_init and validate_mapping tools.
+ */
+
 #include "alignment/LandmarkMapping.h"
 #include <fstream>
 #include <sstream>

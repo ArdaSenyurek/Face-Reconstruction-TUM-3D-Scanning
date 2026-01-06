@@ -1,3 +1,10 @@
+/**
+ * Landmark Data
+ * 
+ * Handles 2D facial landmark data structures and I/O.
+ * Loads landmarks from TXT/JSON files (detected by Python pipeline).
+ */
+
 #include "landmarks/LandmarkData.h"
 #include <fstream>
 #include <sstream>
