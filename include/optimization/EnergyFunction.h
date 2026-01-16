@@ -113,8 +113,8 @@ private:
     // Numerical differentiation step size
     double epsilon_ = 1e-6;
     
-    // Depth sampling parameters (for accuracy vs speed tradeoff)
-    int depth_sample_step_ = 4;   // Sample every Nth pixel (lower = more accurate)
+    // Depth sampling parameters (for efficiency)
+    int depth_sample_step_ = 16;  // Sample every Nth pixel (higher = faster)
     
     /**
      * Reconstruct face mesh with given parameters

@@ -98,7 +98,6 @@ void printUsage(const char* program_name) {
               << "  --output-pointcloud <path> Output point cloud file path (PLY)\n"
               << "  --optimize                Enable Gauss-Newton optimization\n"
               << "  --no-optimize             Output mean shape only (default)\n"
-              << "  --pose-only               Optimize pose only (no shape/expression)\n"
               << "  --max-iter <n>            Max optimization iterations (default: 50)\n"
               << "  --lambda-landmark <w>     Landmark weight (default: 1.0)\n"
               << "  --lambda-depth <w>        Depth weight (default: 0.1)\n"
@@ -118,7 +117,6 @@ int main(int argc, char* argv[]) {
     std::string landmarks_path, mapping_path, output_mesh, output_pointcloud;
     double depth_scale = 1000.0;
     bool optimize = false;
-    bool pose_only = false;
     bool verbose = false;
     int max_iterations = 50;
     double lambda_landmark = 1.0;
@@ -153,8 +151,6 @@ int main(int argc, char* argv[]) {
             optimize = true;
         } else if (arg == "--no-optimize") {
             optimize = false;
-        } else if (arg == "--pose-only") {
-            pose_only = true;
         } else if (arg == "--verbose") {
             verbose = true;
         } else if (arg == "--max-iter" && i + 1 < argc) {
@@ -291,12 +287,6 @@ int main(int argc, char* argv[]) {
     params.lambda_depth = lambda_depth;
     params.lambda_alpha = lambda_reg;
     params.lambda_delta = lambda_reg;
-    
-    // Apply pose-only mode (faster but less accurate)
-    if (pose_only) {
-        params.optimize_identity = false;
-        params.optimize_expression = false;
-    }
     
     // Scale factor from Procrustes (BFM mm -> camera meters)
     double pose_scale = 1.0;
@@ -443,29 +433,29 @@ int main(int argc, char* argv[]) {
     }
     
     std::cout << "    Final mesh: " << final_vertices.rows() << " vertices" << std::endl;
-        
-        // Save mesh to file
-        if (!output_mesh.empty()) {
+    
+    // Save mesh to file
+    if (!output_mesh.empty()) {
         std::cout << "\n[9] Saving mesh to: " << output_mesh << std::endl;
-            std::string ext = output_mesh.substr(output_mesh.find_last_of(".") + 1);
-            
-            bool saved = false;
-            if (ext == "ply" || ext == "PLY") {
+        std::string ext = output_mesh.substr(output_mesh.find_last_of(".") + 1);
+        
+        bool saved = false;
+        if (ext == "ply" || ext == "PLY") {
             saved = model.saveMeshPLY(final_vertices, output_mesh);
-            } else if (ext == "obj" || ext == "OBJ") {
+        } else if (ext == "obj" || ext == "OBJ") {
             saved = model.saveMeshOBJ(final_vertices, output_mesh);
-            } else {
-                std::cerr << "Error: Unsupported mesh format. Use .ply or .obj" << std::endl;
-                return 1;
-            }
-            
-            if (saved) {
-                std::cout << "    Mesh saved successfully!" << std::endl;
-            } else {
-                std::cerr << "Error: Failed to save mesh" << std::endl;
-                return 1;
-            }
         } else {
+            std::cerr << "Error: Unsupported mesh format. Use .ply or .obj" << std::endl;
+            return 1;
+        }
+        
+        if (saved) {
+            std::cout << "    Mesh saved successfully!" << std::endl;
+        } else {
+            std::cerr << "Error: Failed to save mesh" << std::endl;
+            return 1;
+        }
+    } else {
         std::cout << "\n[9] No output mesh path specified (use --output-mesh)" << std::endl;
     }
     

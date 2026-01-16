@@ -38,9 +38,9 @@ struct OptimizationParams {
     double step_size = 1.0;      // Gauss-Newton step size (can reduce for stability)
     
     // Which parameters to optimize (useful for multi-frame tracking)
-    // Default: full optimization enabled for accuracy
-    bool optimize_identity = true;     // Identity coefficients
-    bool optimize_expression = true;   // Expression coefficients
+    // Default: pose-only for speed (identity/expression disabled)
+    bool optimize_identity = false;    // Disabled for speed
+    bool optimize_expression = false;  // Disabled for speed  
     bool optimize_rotation = true;
     bool optimize_translation = true;
     

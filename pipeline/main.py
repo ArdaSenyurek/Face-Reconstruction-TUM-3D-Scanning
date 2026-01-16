@@ -744,7 +744,6 @@ class PipelineOrchestrator:
                 "save_pointclouds": self.config.get("save_pointclouds", False),
                 # Week 4: Optimization settings
                 "optimize": self.config.get("optimize", False),
-                "pose_only": self.config.get("pose_only", False),
                 "landmark_mapping": self.config.get("landmark_mapping", "data/landmark_mapping.txt"),
                 "verbose": self.config.get("verbose_optimize", False),
                 "max_iterations": self.config.get("max_iterations", 50),
@@ -939,8 +938,6 @@ Examples:
                       help="Regularization weight (default: 1.0)")
     parser.add_argument("--verbose-optimize", action="store_true",
                       help="Print detailed optimization output")
-    parser.add_argument("--pose-only", action="store_true",
-                      help="Optimize pose only (no shape/expression) - faster but less accurate")
     
     # BFM settings
     parser.add_argument("--bfm-dir", type=Path, default=DEFAULT_BFM_DIR,
@@ -1004,7 +1001,6 @@ def main() -> int:
         "lambda_depth": args.lambda_depth,
         "lambda_reg": args.lambda_reg,
         "verbose_optimize": args.verbose_optimize,
-        "pose_only": args.pose_only,
     }
     
     # Run pipeline

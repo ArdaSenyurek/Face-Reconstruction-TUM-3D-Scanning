@@ -39,7 +39,6 @@ class ReconstructionStep(PipelineStep):
         
         # Week 4: Optimization settings
         optimize = self.config.get("optimize", False)
-        pose_only = self.config.get("pose_only", False)
         landmark_mapping = Path(self.config.get("landmark_mapping", "data/landmark_mapping.txt"))
         verbose = self.config.get("verbose", False)
         max_iterations = self.config.get("max_iterations", 50)
@@ -79,7 +78,6 @@ class ReconstructionStep(PipelineStep):
                     landmarks=landmarks_file if landmarks_file.exists() else None,
                     mapping=landmark_mapping if landmark_mapping.exists() else None,
                     optimize=optimize,
-                    pose_only=pose_only,
                     verbose=verbose,
                     max_iterations=max_iterations,
                     lambda_landmark=lambda_landmark,
@@ -126,7 +124,6 @@ class ReconstructionStep(PipelineStep):
         landmarks: Optional[Path] = None,
         mapping: Optional[Path] = None,
         optimize: bool = False,
-        pose_only: bool = False,
         verbose: bool = False,
         max_iterations: int = 50,
         lambda_landmark: float = 1.0,
@@ -156,8 +153,6 @@ class ReconstructionStep(PipelineStep):
         
         if optimize:
             cmd.append("--optimize")
-            if pose_only:
-                cmd.append("--pose-only")
             cmd.extend(["--max-iter", str(max_iterations)])
             cmd.extend(["--lambda-landmark", str(lambda_landmark)])
             cmd.extend(["--lambda-depth", str(lambda_depth)])
