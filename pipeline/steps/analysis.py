@@ -168,24 +168,31 @@ class AnalysisStep(PipelineStep):
     
     def _measure_runtime(self, binary: Path, rgb: Path, depth: Path, intrinsics: Path,
                         model_dir: Path, timeout: int) -> Optional[float]:
-        """Measure reconstruction runtime by rerunning the binary."""
+        """Measure reconstruction runtime by rerunning the binary.
+        
+        Note: Uses a temporary file that is automatically cleaned up.
+        """
+        import tempfile
+        import os
+        
         if not binary.exists():
             self.logger.warning(f"Binary not found for runtime measurement: {binary}")
             return None
         
-        tmp_mesh = Path(self.config["analysis_root"]) / "runtime_meshes" / rgb.parent.parent.name / f"{rgb.stem}_tmp.ply"
-        tmp_mesh.parent.mkdir(parents=True, exist_ok=True)
-        
-        cmd = [
-            str(binary),
-            "--rgb", str(rgb),
-            "--depth", str(depth),
-            "--intrinsics", str(intrinsics),
-            "--model-dir", str(model_dir),
-            "--output-mesh", str(tmp_mesh),
-        ]
+        # Use a proper temp file that gets auto-deleted
+        fd, tmp_mesh = tempfile.mkstemp(suffix=".ply", prefix="runtime_mesh_")
+        os.close(fd)  # Close the file descriptor, we just need the path
         
         try:
+            cmd = [
+                str(binary),
+                "--rgb", str(rgb),
+                "--depth", str(depth),
+                "--intrinsics", str(intrinsics),
+                "--model-dir", str(model_dir),
+                "--output-mesh", tmp_mesh,
+            ]
+            
             start = time.time()
             subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, 
                          stderr=subprocess.DEVNULL, timeout=timeout)
@@ -194,4 +201,10 @@ class AnalysisStep(PipelineStep):
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
             self.logger.warning(f"Runtime measurement failed for {rgb.name}: {e}")
             return None
+        finally:
+            # Always clean up the temp file
+            try:
+                os.unlink(tmp_mesh)
+            except OSError:
+                pass
 
