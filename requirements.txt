@@ -1,0 +1,21 @@
+# Core dependencies for 3D Face Reconstruction Pipeline
+numpy>=1.20.0
+opencv-python>=4.5.0
+
+# Optional but recommended
+scipy>=1.7.0
+
+# Build tools (for compiling packages like dlib)
+setuptools>=65.0.0
+wheel>=0.38.0
+
+# Landmark detection (dlib is the default)
+dlib>=19.0.0
+
+# Alternative landmark detection (optional)
+# mediapipe>=0.10.0  # Alternative: use if dlib installation fails
+# face-alignment>=1.1.0  # Another alternative
+
+# Dataset download
+kagglehub>=0.2.0
+h5py >=3.10.0

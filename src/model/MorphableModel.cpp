@@ -1,3 +1,11 @@
+/**
+ * Morphable Face Model
+ * 
+ * PCA-based 3D morphable face model.
+ * Loads identity and expression basis vectors, mean shape, and reconstructs 3D faces.
+ * Core component for all reconstruction tools.
+ */
+
 #include "model/MorphableModel.h"
 #include <fstream>
 #include <iostream>

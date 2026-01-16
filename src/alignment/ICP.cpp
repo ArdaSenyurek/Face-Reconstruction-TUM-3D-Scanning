@@ -1,3 +1,10 @@
+/**
+ * Iterative Closest Point (ICP)
+ * 
+ * Dense alignment algorithm for fine-tuning pose.
+ * Currently used only for validation/testing, not in main pipeline.
+ */
+
 #include "alignment/ICP.h"
 #include "alignment/Procrustes.h"
 #include <algorithm>

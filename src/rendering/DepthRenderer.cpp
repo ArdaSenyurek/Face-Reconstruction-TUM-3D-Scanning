@@ -1,3 +1,10 @@
+/**
+ * Depth Renderer
+ * 
+ * Renders depth maps from 3D meshes using projection, rasterization, and z-buffer.
+ * Currently used only for validation/testing, not in main pipeline.
+ */
+
 #include "rendering/DepthRenderer.h"
 #include <algorithm>
 #include <limits>

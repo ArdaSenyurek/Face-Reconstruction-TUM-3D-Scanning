@@ -1,219 +1,253 @@
-# 3D Face Reconstruction - Week 1
+# 3D Face Reconstruction from RGB-D Data
 
-This project implements a 3D face reconstruction pipeline using RGB-D data and a PCA-based Morphable Face Model.
+Real-time parametric face reconstruction using the Basel Face Model (BFM) and RGB-D data from the Biwi Kinect Head Pose Database.
+
+## Quick Start
+
+```bash
+# 1. Install dependencies
+pip install -r requirements.txt
+
+# 2. Download Basel Face Model (see below)
+# Place model2019_fullHead.h5 in data/bfm/
+
+# 3. Run the pipeline
+python pipeline/main.py --download --frames 2 --optimize
+```
+
+## Prerequisites
+
+### System Requirements
+- **OS**: macOS, Linux (Windows untested)
+- **Python**: 3.8+
+- **CMake**: 3.14+
+- **C++ Compiler**: C++17 support required
+
+### Required Libraries
+```bash
+# macOS
+brew install cmake eigen opencv
+
+# Ubuntu/Debian
+sudo apt-get install cmake libeigen3-dev libopencv-dev
+```
+
+## Setup
+
+### Step 1: Clone and Install Python Dependencies
+
+```bash
+git clone <repository-url>
+cd Face-Reconstruction-TUM-3D-Scanning
+
+# Create virtual environment (recommended)
+python -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+
+# Install dependencies
+pip install -r requirements.txt
+```
+
+### Step 2: Download the Basel Face Model (Required)
+
+The Basel Face Model (BFM) 2019 is required for reconstruction.
+
+1. **Register** at: https://faces.dmi.unibas.ch/bfm/bfm2019.html
+2. **Download**: `model2019_fullHead.h5`
+3. **Place** the file in: `data/bfm/model2019_fullHead.h5`
+
+```bash
+mkdir -p data/bfm
+# Copy your downloaded model here
+cp ~/Downloads/model2019_fullHead.h5 data/bfm/
+```
+
+### Step 3: Set Up Kaggle API (For Dataset Download)
+
+The Biwi dataset is downloaded automatically from Kaggle.
+
+1. **Create** a Kaggle account at https://www.kaggle.com
+2. **Get API credentials**: Kaggle → Settings → API → Create New Token
+3. **Save** `kaggle.json` to `~/.kaggle/kaggle.json`
+
+```bash
+mkdir -p ~/.kaggle
+mv ~/Downloads/kaggle.json ~/.kaggle/
+chmod 600 ~/.kaggle/kaggle.json
+```
+
+Alternatively, set environment variables:
+```bash
+export KAGGLE_USERNAME="your_username"
+export KAGGLE_KEY="your_api_key"
+```
+
+## Usage
+
+### Basic Usage
+
+```bash
+# Download dataset + run pipeline (2 frames per sequence)
+python pipeline/main.py --download --frames 2
+
+# With Gauss-Newton optimization (recommended)
+python pipeline/main.py --download --frames 2 --optimize
+```
+
+### Common Options
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--download` | Download Biwi dataset from Kaggle | Off |
+| `--frames N` | Process N frames per sequence | 5 |
+| `--optimize` | Enable Gauss-Newton optimization | Off |
+| `--pose-only` | Optimize pose only (faster) | Off |
+| `--sequence SEQ` | Process specific sequence(s) only | All |
+
+### Skip Steps (for re-runs)
+
+```bash
+# Skip steps that were already completed
+python pipeline/main.py --skip-convert --skip-model-setup --frames 5 --optimize
+```
+
+| Skip Option | What it skips |
+|-------------|---------------|
+| `--skip-download` | Dataset download |
+| `--skip-convert` | Data conversion |
+| `--skip-model-setup` | BFM model conversion |
+| `--skip-landmarks` | Landmark detection |
+| `--skip-pose-init` | Initial pose estimation |
+| `--skip-reconstruct` | 3D reconstruction |
+| `--no-analysis` | Analysis step |
+
+### Advanced Optimization Settings
+
+```bash
+python pipeline/main.py --optimize \
+    --max-iterations 20 \
+    --lambda-landmark 1.0 \
+    --lambda-depth 0.1 \
+    --lambda-reg 1.0 \
+    --verbose-optimize
+```
+
+## Output Structure
+
+```
+outputs/
+├── converted/           # Processed RGB-D frames
+│   └── 01/
+│       ├── rgb/         # RGB images (PNG)
+│       ├── depth/       # Depth maps (PNG, 16-bit)
+│       ├── depth_vis/   # Depth visualizations
+│       └── intrinsics.txt
+├── landmarks/           # Detected 2D landmarks (TXT)
+├── overlays/            # Landmark visualization on RGB
+├── pose_init/           # Initial pose estimation (PLY)
+├── meshes/              # Final reconstructed faces (PLY)
+│   └── 01/
+│       ├── frame_00000.ply
+│       └── frame_00001.ply
+├── analysis/
+│   ├── metrics.json     # RMSE and statistics
+│   └── pointclouds/     # Depth point clouds
+└── logs/
+    ├── pipeline_summary.json
+    └── pipeline_*.log
+```
+
+## Viewing Results
+
+### PLY Files
+Open `.ply` files with:
+- **MeshLab** (free): https://www.meshlab.net
+- **CloudCompare** (free): https://cloudcompare.org
+- **Blender** (free): https://www.blender.org
+
+### Metrics
+Check reconstruction quality in `outputs/analysis/metrics.json`:
+```json
+{
+  "01": {
+    "frame_00000": {
+      "rmse_cloud_mesh_m": 0.167,  // Lower is better
+      "cloud_points": 56336
+    }
+  }
+}
+```
+
+## Pipeline Steps
+
+1. **Preflight**: Check dependencies, build C++ binaries
+2. **Download**: Fetch Biwi dataset from Kaggle
+3. **Conversion**: Convert raw data to standard format
+4. **Model Setup**: Convert BFM to project format
+5. **Landmark Model**: Download dlib face landmark model
+6. **Landmarks**: Detect 68 facial landmarks
+7. **Mapping**: Validate landmark-to-vertex mapping
+8. **Pose Init**: Initial pose via Procrustes alignment
+9. **Reconstruction**: Gauss-Newton optimization
+10. **Analysis**: Compute RMSE metrics
+
+## Troubleshooting
+
+### "Model not found"
+```bash
+# Ensure BFM model is in the correct location
+ls data/bfm/model2019_fullHead.h5
+```
+
+### "Kaggle API not configured"
+```bash
+# Check kaggle.json exists
+ls ~/.kaggle/kaggle.json
+# Or set environment variables
+export KAGGLE_USERNAME="your_username"
+export KAGGLE_KEY="your_key"
+```
+
+### Build Errors
+```bash
+# Rebuild from scratch
+rm -rf build
+mkdir build && cd build
+cmake ..
+make -j4
+```
+
+### dlib Installation Issues
+```bash
+# On macOS, ensure Xcode tools are installed
+xcode-select --install
+
+# Use conda if pip fails
+conda install -c conda-forge dlib
+```
 
 ## Project Structure
 
 ```
-face_reconstruction/
-├── CMakeLists.txt          # Main CMake build file
-├── README.md
-├── include/                # Header files
-│   ├── camera/
-│   │   └── CameraIntrinsics.h
-│   ├── data/
-│   │   └── RGBDFrame.h
-│   ├── utils/
-│   │   └── DepthUtils.h
-│   ├── model/
-│   │   └── MorphableModel.h
-│   ├── landmarks/
-│   │   └── LandmarkData.h
-│   └── alignment/
-│       └── Procrustes.h
-├── src/                    # Implementation files
-│   ├── main.cpp
-│   ├── camera/
-│   ├── data/
-│   ├── utils/
-│   ├── model/
-│   ├── landmarks/
-│   └── alignment/
-└── build/                  # Build directory (in gitignore)
+├── pipeline/           # Python orchestration
+│   ├── main.py         # Entry point
+│   └── steps/          # Pipeline steps
+├── src/                # C++ implementation
+│   ├── tools/          # Executables
+│   ├── model/          # Morphable model
+│   ├── optimization/   # Gauss-Newton optimizer
+│   └── alignment/      # Procrustes, ICP
+├── include/            # C++ headers
+├── data/               # Models and datasets
+└── outputs/            # Results
 ```
 
-## Dependencies
+## Citation
 
-- **CMake** (version 3.15 or higher)
-- **C++17** compatible compiler (GCC, Clang, MSVC)
-- **OpenCV** (version 3.x or 4.x)
-- **Eigen3** (linear algebra library)
-
-### Installing Dependencies
-
-#### macOS (Homebrew)
-```bash
-brew install opencv eigen cmake
-```
-
-#### Ubuntu/Debian
-```bash
-sudo apt-get install libopencv-dev libeigen3-dev cmake build-essential
-```
-
-#### Windows (vcpkg)
-```bash
-vcpkg install opencv eigen3
-```
-
-## Building
-
-```bash
-# Create build directory
-mkdir build
-cd build
-
-# Configure with CMake
-cmake ..
-
-# Build
-cmake --build . --config Release
-
-# Or using make (Linux/macOS)
-make -j4
-```
-
-## Running
-
-### Basic test program
-```bash
-./bin/FaceReconstruction
-```
-
-### Test with real RGB-D data
-
-**Quick test script:**
-```bash
-./scripts/test_real_data.sh data/test/rgb.png data/test/depth.png \
-    data/test/intrinsics.txt data/model data/test
-```
-
-**Manual test:**
-```bash
-./bin/test_real_data --rgb data/rgb.png --depth data/depth.png \
-    --intrinsics data/intrinsics.txt --model-dir data/model \
-    --landmarks data/landmarks.txt --output-mesh output/face.ply
-```
-
-**Detect landmarks first:**
-```bash
-# Using MediaPipe (recommended)
-python3 scripts/detect_landmarks.py \
-    --image data/rgb.png \
-    --method mediapipe \
-    --output data/landmarks.txt \
-    --visualize
-```
-
-For more options:
-```bash
-./bin/test_real_data --help
-python3 scripts/detect_landmarks.py --help
-```
-
-## Week 1 Scope
-
-Week 1 focuses on preparation and foundation:
-
-### 1. Project Structure ✅
-- CMake-based C++ project
-- Modular folder structure
-- Header/source separation
-
-### 2. Data Loading (RGB-D) ✅
-- `RGBDFrame`: Load RGB and depth images
-- `CameraIntrinsics`: Camera intrinsic parameters
-- Invalid depth value masking
-
-### 3. Depth to 3D Backprojection ✅
-- `DepthUtils`: Convert depth image to 3D point cloud
-- Backprojection for individual pixels and entire images
-
-### 4. PCA Morphable Model ✅
-- `MorphableModel`: Model structure and loading interface
-- Basic face reconstruction function
-- Currently uses dummy data; implement `loadFromFiles()` for actual model files
-
-### 5. Landmark Detection Interface ✅
-- `LandmarkData`: Store 2D landmark data
-- Support for TXT and JSON formats (JSON uses simple parser)
-- Mapping to model vertex indices
-
-### 6. Procrustes Alignment ✅
-- `SimilarityTransform`: Scale, rotation, translation
-- `estimateSimilarityTransform()`: Procrustes analysis implementation
-
-### 7. Example Main Program ✅
-- Example code that tests all modules
-- Works even without actual data files
-
-## Testing with Real Data
-
-See **[TESTING_WITH_REAL_DATA.md](TESTING_WITH_REAL_DATA.md)** for a complete guide on testing with real RGB-D data.
-
-### Quick Start: Generate Test Model
-
-First, generate a dummy model for testing:
-
-```bash
-python3 scripts/prepare_model.py --generate-dummy --output data/model
-```
-
-This creates test model files in `data/model/` that you can use immediately.
-
-### Preparing Your Own Model
-
-See [scripts/README.md](scripts/README.md) for detailed instructions on:
-- Converting from NumPy files
-- Converting from Basel Face Model
-- Converting from PyTorch/TensorFlow models
-- Converting between binary and text formats
-
-### Data Format Documentation
-
-See [DATA_FORMAT.md](DATA_FORMAT.md) for detailed information about:
-- RGB-D data formats
-- PCA model file formats (binary and text)
-- Landmark file formats
-- Camera intrinsics format
-- Example directory structure
-
-### Quick Start with Real Data
-
-1. **Prepare your data**:
-   - RGB image (PNG/JPEG)
-   - Depth image (16-bit PNG)
-   - Camera intrinsics file
-   - PCA model files (in a directory)
-   - Landmarks file (TXT or JSON)
-
-2. **Run the test program**:
-   ```bash
-   ./bin/test_real_data --rgb path/to/rgb.png \
-       --depth path/to/depth.png \
-       --intrinsics path/to/intrinsics.txt \
-       --model-dir path/to/model/ \
-       --landmarks path/to/landmarks.txt \
-       --output-mesh output/face.ply
-   ```
-
-3. **View the mesh**: Open the generated PLY/OBJ file in MeshLab, Blender, or similar software.
-
-## Next Steps (Week 2+)
-
-- [x] Load actual PCA model files
-- [x] Mesh export (PLY/OBJ)
-- [ ] Landmark detection (Python wrapper + dlib/MediaPipe)
-- [ ] Gauss-Newton / Levenberg-Marquardt optimization
-- [ ] Dense depth alignment
-- [ ] Rendering pipeline
-
-## Notes
-
-- `MorphableModel::loadFromFiles()` currently generates dummy data. Implement this function to load your actual PCA model files.
-- A separate Python script is recommended for landmark detection (using dlib/MediaPipe), saving results as JSON/TXT to be loaded by C++.
-- OpenCV and Eigen paths are automatically detected in CMakeLists.txt. If issues occur, configure them manually.
+If you use this code, please cite:
+- Basel Face Model: https://faces.dmi.unibas.ch
+- Biwi Kinect Head Pose Database: Fanelli et al., IJCV 2013
 
 ## License
 
-This project is for educational purposes.
+See LICENSE file.

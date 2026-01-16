@@ -1,3 +1,10 @@
+/**
+ * RGB-D Frame
+ * 
+ * Handles loading and management of RGB and depth images.
+ * Core data structure for RGB-D processing pipeline.
+ */
+
 #include "data/RGBDFrame.h"
 #include <iostream>
 #include <limits>
