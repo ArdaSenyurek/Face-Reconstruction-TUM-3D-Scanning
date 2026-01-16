@@ -5,7 +5,7 @@ Calls C++ validate_mapping binary for all computation.
 import subprocess
 from pathlib import Path
 
-from pipeline import PipelineStep, StepResult, StepStatus
+from main import PipelineStep, StepResult, StepStatus
 
 
 class MappingSetupStep(PipelineStep):

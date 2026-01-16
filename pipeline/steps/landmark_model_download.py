@@ -10,7 +10,7 @@ import io
 from pathlib import Path
 from typing import Optional
 
-from pipeline import PipelineStep, StepResult, StepStatus
+from main import PipelineStep, StepResult, StepStatus
 
 # SSL context helper
 def _get_ssl_context():
@@ -135,70 +135,40 @@ def _download_dlib_model_with_logger(output_dir: Path, logger) -> bool:
         return False
 
 
-class ModelDownloadStep(PipelineStep):
-    """Download landmark detection models if needed."""
+class LandmarkModelDownloadStep(PipelineStep):
+    """Download dlib landmark detection model for 2D facial feature detection."""
     
     @property
     def name(self) -> str:
-        return "Model Download"
+        return "Landmark Model Download"
     
     @property
     def description(self) -> str:
-        return "Download landmark detection models (dlib, MediaPipe, etc.)"
+        return "Download dlib shape predictor for 2D landmark detection"
     
     def execute(self) -> StepResult:
         """Download models based on the landmark detection method being used."""
-        landmark_method = self.config.get("landmarks", "dlib")
-        if landmark_method == "none":
-            return StepResult(StepStatus.SKIPPED, "Landmark detection disabled, skipping model download")
-        
+        # Only dlib is supported
         models_dir = Path(self.config.get("models_dir", "data/models"))
         models_dir.mkdir(parents=True, exist_ok=True)
         
         results = []
         
-        # Download dlib model if using dlib
-        if landmark_method == "dlib":
-            dlib_model_path = models_dir / "shape_predictor_68_face_landmarks.dat"
-            
-            # Check if file exists and is valid (validation is done in _download_dlib_model_with_logger)
-            # This function will skip download if file is valid
-            success = _download_dlib_model_with_logger(models_dir, self.logger)
-            if success:
-                results.append("dlib")
-            else:
-                # Check if file exists but download failed (might be corrupted)
-                if dlib_model_path.exists():
-                    file_size = dlib_model_path.stat().st_size
-                    if file_size < 10 * 1024 * 1024:
-                        self.logger.warning(f"dlib model file is too small ({file_size} bytes) and download failed.")
-                        self.logger.warning("Please manually download from: http://dlib.net/files/shape_predictor_68_face_landmarks.dat.bz2")
-                    else:
-                        self.logger.warning("dlib model download failed, but existing file may be usable.")
+        # Download dlib model
+        dlib_model_path = models_dir / "shape_predictor_68_face_landmarks.dat"
+        success = _download_dlib_model_with_logger(models_dir, self.logger)
+        if success:
+            results.append("dlib")
+        else:
+            if dlib_model_path.exists():
+                file_size = dlib_model_path.stat().st_size
+                if file_size < 10 * 1024 * 1024:
+                    self.logger.warning(f"dlib model file is too small ({file_size} bytes) and download failed.")
+                    self.logger.warning("Please manually download from: http://dlib.net/files/shape_predictor_68_face_landmarks.dat.bz2")
                 else:
-                    self.logger.warning("dlib model download failed. You can download it manually later.")
-        
-        # Check MediaPipe if using it
-        elif landmark_method == "mediapipe":
-            self.logger.info("Checking MediaPipe installation...")
-            if _check_mediapipe_models():
-                results.append("mediapipe")
+                    self.logger.warning("dlib model download failed, but existing file may be usable.")
             else:
-                self.logger.warning("MediaPipe not installed. Install with: pip install mediapipe")
-        
-        # Check face_alignment if using it
-        elif landmark_method == "face_alignment":
-            self.logger.info("Checking face_alignment installation...")
-            if _check_face_alignment_models():
-                results.append("face_alignment")
-            else:
-                self.logger.warning("face_alignment not installed. Install with: pip install face-alignment")
-        
-        # If no specific method or multiple methods, download dlib as fallback
-        # (dlib is commonly used and requires manual download)
-        if not results and landmark_method not in ["mediapipe", "face_alignment"]:
-            if _download_dlib_model_with_logger(models_dir, self.logger):
-                results.append("dlib")
+                self.logger.warning("dlib model download failed. You can download it manually later.")
         
         if results:
             return StepResult(

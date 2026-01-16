@@ -5,7 +5,7 @@ import subprocess
 from pathlib import Path
 from typing import Optional
 
-from pipeline import PipelineStep, StepResult, StepStatus
+from main import PipelineStep, StepResult, StepStatus
 
 
 class PoseInitStep(PipelineStep):
@@ -38,7 +38,10 @@ class PoseInitStep(PipelineStep):
         
         pose_reports = []
         for seq_report in conversion_reports:
-            seq_dir = Path(seq_report["output_dir"])
+            output_dir = seq_report.get("output_dir")
+            if not output_dir:
+                continue  # skip failed conversions with no output dir
+            seq_dir = Path(output_dir)
             seq_id = seq_dir.name
             intrinsics_path = seq_dir / "intrinsics.txt"
             rgb_dir = seq_dir / "rgb"

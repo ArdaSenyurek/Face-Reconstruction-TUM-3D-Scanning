@@ -9,7 +9,7 @@ import time
 from pathlib import Path
 from typing import Optional, Dict, Any
 
-from pipeline import PipelineStep, StepResult, StepStatus
+from main import PipelineStep, StepResult, StepStatus
 
 
 class AnalysisStep(PipelineStep):

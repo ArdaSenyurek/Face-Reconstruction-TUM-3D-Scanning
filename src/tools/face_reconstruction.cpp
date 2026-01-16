@@ -1,22 +1,21 @@
 /**
- * Face Reconstruction Tool
+ * Face Reconstruction Tool (Week 4: With Optimization)
  * 
  * Main 3D face reconstruction executable called by Python pipeline.
- * Reconstructs 3D face meshes from RGB-D data using a PCA morphable model.
+ * Reconstructs 3D face meshes from RGB-D data using a PCA morphable model
+ * and Gauss-Newton optimization.
  * 
  * Pipeline Step: ReconstructionStep (Python)
  * 
  * Usage:
  *   build/bin/face_reconstruction --rgb <path> --depth <path> \
  *                                  --intrinsics <path> --model-dir <path> \
- *                                  --output-mesh <path> [--output-pointcloud <path>]
+ *                                  --landmarks <path> --mapping <path> \
+ *                                  --output-mesh <path> [options]
  * 
- * Example:
- *   build/bin/face_reconstruction --rgb outputs/converted/01/rgb/frame_00000.png \
- *                                  --depth outputs/converted/01/depth/frame_00000.png \
- *                                  --intrinsics outputs/converted/01/intrinsics.txt \
- *                                  --model-dir data/model_biwi \
- *                                  --output-mesh outputs/meshes/01/frame_00000.ply
+ * Optimization modes:
+ *   --optimize         Enable Gauss-Newton optimization (default: off for mean shape only)
+ *   --no-optimize      Output mean shape (zero coefficients)
  */
 
 #include "data/RGBDFrame.h"
@@ -25,6 +24,10 @@
 #include "model/MorphableModel.h"
 #include "landmarks/LandmarkData.h"
 #include "alignment/Procrustes.h"
+#include "alignment/LandmarkMapping.h"
+#include "optimization/Parameters.h"
+#include "optimization/EnergyFunction.h"
+#include "optimization/GaussNewton.h"
 #include <iostream>
 #include <string>
 #include <vector>
@@ -65,6 +68,22 @@ bool savePointCloudPLY(const std::vector<Eigen::Vector3d>& points,
     return true;
 }
 
+/**
+ * Apply pose transformation to vertices (with scale)
+ */
+Eigen::MatrixXd applyPoseToVertices(const Eigen::MatrixXd& vertices,
+                                    const Eigen::Matrix3d& R,
+                                    const Eigen::Vector3d& t,
+                                    double scale = 1.0) {
+    Eigen::MatrixXd transformed(vertices.rows(), 3);
+    for (int i = 0; i < vertices.rows(); ++i) {
+        Eigen::Vector3d v = vertices.row(i).transpose();
+        Eigen::Vector3d v_transformed = scale * (R * v) + t;
+        transformed.row(i) = v_transformed.transpose();
+    }
+    return transformed;
+}
+
 void printUsage(const char* program_name) {
     std::cout << "Usage: " << program_name << " [options]\n"
               << "Options:\n"
@@ -74,20 +93,35 @@ void printUsage(const char* program_name) {
               << "  --intrinsics <path>       Path to camera intrinsics file (fx fy cx cy)\n"
               << "  --model-dir <path>        Directory containing PCA model files\n"
               << "  --landmarks <path>        Path to landmarks file (TXT or JSON)\n"
+              << "  --mapping <path>          Path to landmark mapping file\n"
               << "  --output-mesh <path>      Output mesh file path (PLY or OBJ)\n"
               << "  --output-pointcloud <path> Output point cloud file path (PLY)\n"
+              << "  --optimize                Enable Gauss-Newton optimization\n"
+              << "  --no-optimize             Output mean shape only (default)\n"
+              << "  --max-iter <n>            Max optimization iterations (default: 50)\n"
+              << "  --lambda-landmark <w>     Landmark weight (default: 1.0)\n"
+              << "  --lambda-depth <w>        Depth weight (default: 0.1)\n"
+              << "  --lambda-reg <w>          Regularization weight (default: 1.0)\n"
+              << "  --verbose                 Print detailed optimization output\n"
               << "  --help                    Show this help message\n"
               << "\n"
               << "Example:\n"
               << "  " << program_name << " --rgb data/rgb.png --depth data/depth.png \\\n"
-              << "     --intrinsics data/intrinsics.txt --model-dir data/model \\\n"
-              << "     --landmarks data/landmarks.txt --output-mesh output/face.ply \\\n"
-              << "     --output-pointcloud output/cloud.ply\n";
+              << "     --intrinsics data/intrinsics.txt --model-dir data/model_bfm \\\n"
+              << "     --landmarks data/landmarks.txt --mapping data/landmark_mapping.txt \\\n"
+              << "     --output-mesh output/face.ply --optimize\n";
 }
 
 int main(int argc, char* argv[]) {
-    std::string rgb_path, depth_path, intrinsics_path, model_dir, landmarks_path, output_mesh, output_pointcloud;
+    std::string rgb_path, depth_path, intrinsics_path, model_dir;
+    std::string landmarks_path, mapping_path, output_mesh, output_pointcloud;
     double depth_scale = 1000.0;
+    bool optimize = false;
+    bool verbose = false;
+    int max_iterations = 50;
+    double lambda_landmark = 1.0;
+    double lambda_depth = 0.1;
+    double lambda_reg = 1.0;
     
     // Parse command line arguments
     for (int i = 1; i < argc; ++i) {
@@ -107,24 +141,46 @@ int main(int argc, char* argv[]) {
             model_dir = argv[++i];
         } else if (arg == "--landmarks" && i + 1 < argc) {
             landmarks_path = argv[++i];
+        } else if (arg == "--mapping" && i + 1 < argc) {
+            mapping_path = argv[++i];
         } else if (arg == "--output-mesh" && i + 1 < argc) {
             output_mesh = argv[++i];
         } else if (arg == "--output-pointcloud" && i + 1 < argc) {
             output_pointcloud = argv[++i];
+        } else if (arg == "--optimize") {
+            optimize = true;
+        } else if (arg == "--no-optimize") {
+            optimize = false;
+        } else if (arg == "--verbose") {
+            verbose = true;
+        } else if (arg == "--max-iter" && i + 1 < argc) {
+            max_iterations = std::stoi(argv[++i]);
+        } else if (arg == "--lambda-landmark" && i + 1 < argc) {
+            lambda_landmark = std::stod(argv[++i]);
+        } else if (arg == "--lambda-depth" && i + 1 < argc) {
+            lambda_depth = std::stod(argv[++i]);
+        } else if (arg == "--lambda-reg" && i + 1 < argc) {
+            lambda_reg = std::stod(argv[++i]);
         }
     }
     
-    std::cout << "=== 3D Face Reconstruction ===\n" << std::endl;
+    std::cout << "=== 3D Face Reconstruction ===" << std::endl;
+    std::cout << "Mode: " << (optimize ? "Optimized" : "Mean Shape Only") << std::endl;
+    std::cout << std::endl;
     
     // Load RGB-D frame
     RGBDFrame frame;
+    int image_width = 640, image_height = 480;  // Default
+    
     if (!rgb_path.empty()) {
         std::cout << "[1] Loading RGB image: " << rgb_path << std::endl;
         if (!frame.loadRGB(rgb_path)) {
             std::cerr << "Error: Failed to load RGB image" << std::endl;
             return 1;
         }
-        std::cout << "    RGB loaded: " << frame.width() << "x" << frame.height() << std::endl;
+        image_width = frame.width();
+        image_height = frame.height();
+        std::cout << "    RGB loaded: " << image_width << "x" << image_height << std::endl;
     }
     
     if (!depth_path.empty()) {
@@ -191,6 +247,7 @@ int main(int argc, char* argv[]) {
         }
     } else {
         std::cout << "[5] No model directory specified, skipping model loading" << std::endl;
+        return 1;
     }
     
     // Load landmarks
@@ -212,42 +269,194 @@ int main(int argc, char* argv[]) {
         std::cout << "    Loaded " << landmarks.size() << " landmarks" << std::endl;
     }
     
-    // Reconstruct face mesh (if model is loaded)
-    if (model.isValid()) {
-        std::cout << "[7] Reconstructing face mesh..." << std::endl;
+    // Load landmark mapping
+    LandmarkMapping mapping;
+    if (!mapping_path.empty()) {
+        std::cout << "[7] Loading landmark mapping: " << mapping_path << std::endl;
+        if (!mapping.loadFromFile(mapping_path)) {
+            std::cerr << "Error: Failed to load landmark mapping" << std::endl;
+            return 1;
+        }
+        std::cout << "    Loaded " << mapping.size() << " mappings" << std::endl;
+    }
+    
+    // Initialize optimization parameters
+    OptimizationParams params(model.num_identity_components, model.num_expression_components);
+    params.max_iterations = max_iterations;
+    params.lambda_landmark = lambda_landmark;
+    params.lambda_depth = lambda_depth;
+    params.lambda_alpha = lambda_reg;
+    params.lambda_delta = lambda_reg;
+    
+    // Scale factor from Procrustes (BFM mm -> camera meters)
+    double pose_scale = 1.0;
+    
+    Eigen::MatrixXd final_vertices;
+    
+    if (optimize && landmarks.size() > 0 && mapping.size() > 0) {
+        // =========================================
+        // Week 4: Gauss-Newton Optimization
+        // =========================================
+        std::cout << "\n[8] Running Gauss-Newton optimization..." << std::endl;
         
-        // For now, use zero coefficients (mean shape)
-        // In Week 2+, we'll optimize these coefficients based on landmarks and depth
+        // Initialize pose from Procrustes if we have depth and landmarks
+        if (points_3d.size() > 0) {
+            std::cout << "    Initializing pose with Procrustes..." << std::endl;
+            
+            // Extract 3D points at landmark locations
+            std::vector<Eigen::Vector3d> landmark_points_3d;
+            std::vector<Eigen::Vector3d> model_points_3d;
+            
+            for (size_t i = 0; i < landmarks.size(); ++i) {
+                int lm_idx = static_cast<int>(i);
+                if (!mapping.hasMapping(lm_idx)) continue;
+                
+                int vertex_idx = mapping.getModelVertex(lm_idx);
+                if (vertex_idx < 0 || vertex_idx >= model.num_vertices) continue;
+                
+                // Get landmark position
+                const auto& lm = landmarks[i];
+                int u = static_cast<int>(lm.x);
+                int v = static_cast<int>(lm.y);
+                
+                // Get depth at landmark location
+                if (u >= 0 && u < frame.getDepth().cols && 
+                    v >= 0 && v < frame.getDepth().rows) {
+                    float d = frame.getDepth().at<float>(v, u);
+                    if (d > 0) {
+                        // Backproject to 3D
+                        double X = (u - intrinsics.cx) * d / intrinsics.fx;
+                        double Y = (v - intrinsics.cy) * d / intrinsics.fy;
+                        double Z = d;
+                        landmark_points_3d.push_back(Eigen::Vector3d(X, Y, Z));
+                        
+                        // Get corresponding model point
+                        model_points_3d.push_back(model.getMeanShapeMatrix().row(vertex_idx));
+                    }
+                }
+            }
+            
+            if (landmark_points_3d.size() >= 4) {
+                // Estimate similarity transform
+                SimilarityTransform transform = estimateSimilarityTransform(
+                    model_points_3d, landmark_points_3d);
+                
+                // Initialize params with Procrustes result
+                params.R = transform.rotation;
+                params.t = transform.translation;
+                params.scale = transform.scale;  // Critical: BFM mm -> camera meters
+                pose_scale = transform.scale;    // Also store for final output
+                
+                std::cout << "    Procrustes init: " << landmark_points_3d.size() 
+                          << " correspondences, scale=" << pose_scale << std::endl;
+            }
+        }
+        
+        // Run optimization
+        GaussNewtonOptimizer optimizer;
+        optimizer.initialize(model, intrinsics, image_width, image_height);
+        optimizer.setVerbose(verbose);
+        
+        OptimizationResult result = optimizer.optimize(
+            params, landmarks, mapping, frame.getDepth());
+        
+        // Report results
+        std::cout << "\n    Optimization results:" << std::endl;
+        std::cout << "      Iterations: " << result.iterations << std::endl;
+        std::cout << "      Converged: " << (result.converged ? "Yes" : "No") << std::endl;
+        std::cout << "      Initial energy: " << result.initial_energy << std::endl;
+        std::cout << "      Final energy: " << result.final_energy << std::endl;
+        std::cout << "      Landmark energy: " << result.landmark_energy << std::endl;
+        std::cout << "      Depth energy: " << result.depth_energy << std::endl;
+        std::cout << "      Regularization: " << result.regularization_energy << std::endl;
+        
+        // Reconstruct with optimized coefficients
+        final_vertices = model.reconstructFace(
+            result.final_params.alpha, result.final_params.delta);
+        
+        // Apply final pose (including scale from optimization result)
+        final_vertices = applyPoseToVertices(
+            final_vertices, result.final_params.R, result.final_params.t, 
+            result.final_params.scale);
+        
+    } else {
+        // =========================================
+        // Mean Shape Only (no optimization)
+        // =========================================
+        std::cout << "\n[8] Reconstructing mean shape (no optimization)..." << std::endl;
+        
         Eigen::VectorXd identity_coeffs = Eigen::VectorXd::Zero(model.num_identity_components);
         Eigen::VectorXd expression_coeffs = Eigen::VectorXd::Zero(model.num_expression_components);
         
-        Eigen::MatrixXd vertices = model.reconstructFace(identity_coeffs, expression_coeffs);
-        std::cout << "    Reconstructed mesh with " << vertices.rows() << " vertices" << std::endl;
+        final_vertices = model.reconstructFace(identity_coeffs, expression_coeffs);
         
-        // Save mesh to file
-        if (!output_mesh.empty()) {
-            std::cout << "[8] Saving mesh to: " << output_mesh << std::endl;
-            std::string ext = output_mesh.substr(output_mesh.find_last_of(".") + 1);
+        // If we have landmarks and mapping, try to align with Procrustes
+        if (landmarks.size() > 0 && mapping.size() > 0 && points_3d.size() > 0) {
+            std::cout << "    Applying Procrustes alignment..." << std::endl;
             
-            bool saved = false;
-            if (ext == "ply" || ext == "PLY") {
-                saved = model.saveMeshPLY(vertices, output_mesh);
-            } else if (ext == "obj" || ext == "OBJ") {
-                saved = model.saveMeshOBJ(vertices, output_mesh);
-            } else {
-                std::cerr << "Error: Unsupported mesh format. Use .ply or .obj" << std::endl;
-                return 1;
+            std::vector<Eigen::Vector3d> landmark_points_3d;
+            std::vector<Eigen::Vector3d> model_points_3d;
+            
+            for (size_t i = 0; i < landmarks.size(); ++i) {
+                int lm_idx = static_cast<int>(i);
+                if (!mapping.hasMapping(lm_idx)) continue;
+                
+                int vertex_idx = mapping.getModelVertex(lm_idx);
+                if (vertex_idx < 0 || vertex_idx >= model.num_vertices) continue;
+                
+                const auto& lm = landmarks[i];
+                int u = static_cast<int>(lm.x);
+                int v = static_cast<int>(lm.y);
+                
+                if (u >= 0 && u < frame.getDepth().cols && 
+                    v >= 0 && v < frame.getDepth().rows) {
+                    float d = frame.getDepth().at<float>(v, u);
+                    if (d > 0) {
+                        double X = (u - intrinsics.cx) * d / intrinsics.fx;
+                        double Y = (v - intrinsics.cy) * d / intrinsics.fy;
+                        double Z = d;
+                        landmark_points_3d.push_back(Eigen::Vector3d(X, Y, Z));
+                        model_points_3d.push_back(final_vertices.row(vertex_idx));
+                    }
+                }
             }
             
-            if (saved) {
-                std::cout << "    Mesh saved successfully!" << std::endl;
-            } else {
-                std::cerr << "Error: Failed to save mesh" << std::endl;
-                return 1;
+            if (landmark_points_3d.size() >= 4) {
+                SimilarityTransform transform = estimateSimilarityTransform(
+                    model_points_3d, landmark_points_3d);
+                final_vertices = applyPoseToVertices(
+                    final_vertices, transform.rotation, transform.translation, transform.scale);
+                std::cout << "    Aligned using " << landmark_points_3d.size() 
+                          << " correspondences, scale=" << transform.scale << std::endl;
             }
-        } else {
-            std::cout << "[8] No output mesh path specified (use --output-mesh)" << std::endl;
         }
+    }
+    
+    std::cout << "    Final mesh: " << final_vertices.rows() << " vertices" << std::endl;
+    
+    // Save mesh to file
+    if (!output_mesh.empty()) {
+        std::cout << "\n[9] Saving mesh to: " << output_mesh << std::endl;
+        std::string ext = output_mesh.substr(output_mesh.find_last_of(".") + 1);
+        
+        bool saved = false;
+        if (ext == "ply" || ext == "PLY") {
+            saved = model.saveMeshPLY(final_vertices, output_mesh);
+        } else if (ext == "obj" || ext == "OBJ") {
+            saved = model.saveMeshOBJ(final_vertices, output_mesh);
+        } else {
+            std::cerr << "Error: Unsupported mesh format. Use .ply or .obj" << std::endl;
+            return 1;
+        }
+        
+        if (saved) {
+            std::cout << "    Mesh saved successfully!" << std::endl;
+        } else {
+            std::cerr << "Error: Failed to save mesh" << std::endl;
+            return 1;
+        }
+    } else {
+        std::cout << "\n[9] No output mesh path specified (use --output-mesh)" << std::endl;
     }
     
     std::cout << "\n=== Reconstruction completed successfully ===" << std::endl;

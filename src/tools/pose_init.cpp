@@ -182,8 +182,10 @@ int main(int argc, char* argv[]) {
     }
     
     // Step 2: Get corresponding model vertices using mapping
+    // Build matched pairs: only keep landmarks that have both valid depth AND valid mapping
     std::cout << "[7] Getting corresponding model vertices..." << std::endl;
-    std::vector<Eigen::Vector3d> model_3d_points;
+    std::vector<Eigen::Vector3d> matched_observed;
+    std::vector<Eigen::Vector3d> matched_model;
     Eigen::MatrixXd mean_shape = model.getMeanShapeMatrix();
     
     for (size_t i = 0; i < valid_landmark_indices.size(); ++i) {
@@ -198,25 +200,18 @@ int main(int argc, char* argv[]) {
             continue;
         }
         
+        // Both observed 3D point AND model point are valid - add as matched pair
         Eigen::Vector3d model_point = mean_shape.row(model_vertex_idx);
-        model_3d_points.push_back(model_point);
+        matched_model.push_back(model_point);
+        matched_observed.push_back(observed_3d_points[i]);  // Use same index i
     }
     
-    std::cout << "    Found " << model_3d_points.size() << " valid correspondences" << std::endl;
+    std::cout << "    Found " << matched_model.size() << " valid correspondences" << std::endl;
     
-    if (model_3d_points.size() < 6) {
-        std::cerr << "Error: Not enough valid correspondences (" << model_3d_points.size() 
+    if (matched_model.size() < 6) {
+        std::cerr << "Error: Not enough valid correspondences (" << matched_model.size() 
                   << "). Need at least 6." << std::endl;
         return 1;
-    }
-    
-    // Match up correspondences
-    std::vector<Eigen::Vector3d> matched_observed;
-    std::vector<Eigen::Vector3d> matched_model;
-    
-    for (size_t i = 0; i < model_3d_points.size(); ++i) {
-        matched_observed.push_back(observed_3d_points[i]);
-        matched_model.push_back(model_3d_points[i]);
     }
     
     // Step 3: Estimate similarity transform with Procrustes

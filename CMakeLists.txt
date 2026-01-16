@@ -44,11 +44,8 @@ if(Eigen3_FOUND)
     message(STATUS "Found Eigen3: ${EIGEN3_VERSION_STRING}")
 endif()
 
-# Optional: Ceres (for future optimization)
-# find_package(Ceres REQUIRED)
-
-# Source files
-set(SOURCES
+# Core source files
+set(CORE_SOURCES
     src/data/RGBDFrame.cpp
     src/camera/CameraIntrinsics.cpp
     src/utils/DepthUtils.cpp
@@ -58,6 +55,19 @@ set(SOURCES
     src/alignment/LandmarkMapping.cpp
     src/alignment/ICP.cpp
     src/rendering/DepthRenderer.cpp
+)
+
+# Week 4: Optimization module sources
+set(OPTIMIZATION_SOURCES
+    src/optimization/Parameters.cpp
+    src/optimization/EnergyFunction.cpp
+    src/optimization/GaussNewton.cpp
+)
+
+# All sources (core + optimization)
+set(SOURCES
+    ${CORE_SOURCES}
+    ${OPTIMIZATION_SOURCES}
 )
 
 # Header files
@@ -71,37 +81,80 @@ set(HEADERS
     include/alignment/LandmarkMapping.h
     include/alignment/ICP.h
     include/rendering/DepthRenderer.h
+    include/optimization/Parameters.h
+    include/optimization/EnergyFunction.h
+    include/optimization/GaussNewton.h
 )
 
-# Demo executable (component demonstration)
-add_executable(${PROJECT_NAME}
-    src/demo.cpp
-    ${SOURCES}
-    ${HEADERS}
-)
+# Helper function to create an executable with common settings
+function(add_project_executable TARGET_NAME SOURCE_FILE)
+    add_executable(${TARGET_NAME}
+        ${SOURCE_FILE}
+        ${SOURCES}
+        ${HEADERS}
+    )
+    target_link_libraries(${TARGET_NAME} Eigen3::Eigen)
+    target_include_directories(${TARGET_NAME} PUBLIC ${CMAKE_SOURCE_DIR}/include)
+    
+    if(OpenCV_FOUND)
+        target_link_libraries(${TARGET_NAME} ${OpenCV_LIBS})
+        target_include_directories(${TARGET_NAME} PUBLIC ${OpenCV_INCLUDE_DIRS})
+    else()
+        target_compile_definitions(${TARGET_NAME} PRIVATE OPENCV_NOT_FOUND)
+    endif()
+    
+    if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+        target_compile_options(${TARGET_NAME} PRIVATE -Wall -Wextra)
+    endif()
+    
+    if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+        target_compile_definitions(${TARGET_NAME} PRIVATE DEBUG=1)
+    endif()
+endfunction()
 
+# ======================================
 # Pipeline Tools (called by Python pipeline)
-# Production face reconstruction tool
-add_executable(face_reconstruction
-    src/tools/face_reconstruction.cpp
-    ${SOURCES}
-    ${HEADERS}
-)
+# ======================================
+
+# Production face reconstruction tool (Week 4: with optimization)
+add_project_executable(face_reconstruction src/tools/face_reconstruction.cpp)
 
 # Pose initialization tool (Procrustes alignment)
-add_executable(pose_init
-    src/tools/pose_init.cpp
-    ${SOURCES}
-    ${HEADERS}
-)
+add_project_executable(pose_init src/tools/pose_init.cpp)
 
-# Week 2 Test Executables
-# STEP A: Depth Lifting Test
-add_executable(test_depth_lifting
-    tests/test_depth_lifting.cpp
-    ${SOURCES}
+# Mapping Validation tool
+add_executable(validate_mapping
+    src/tools/validate_mapping.cpp
+    src/model/MorphableModel.cpp
+    src/alignment/LandmarkMapping.cpp
     ${HEADERS}
 )
+target_link_libraries(validate_mapping Eigen3::Eigen)
+target_include_directories(validate_mapping PUBLIC ${CMAKE_SOURCE_DIR}/include)
+
+# Analysis tool (RMSE, depth stats, visualization)
+add_executable(analysis
+    src/tools/analysis.cpp
+    src/data/RGBDFrame.cpp
+    src/camera/CameraIntrinsics.cpp
+    src/utils/DepthUtils.cpp
+    ${HEADERS}
+)
+target_link_libraries(analysis Eigen3::Eigen)
+target_include_directories(analysis PUBLIC ${CMAKE_SOURCE_DIR}/include)
+if(OpenCV_FOUND)
+    target_link_libraries(analysis ${OpenCV_LIBS})
+    target_include_directories(analysis PUBLIC ${OpenCV_INCLUDE_DIRS})
+else()
+    target_compile_definitions(analysis PRIVATE OPENCV_NOT_FOUND)
+endif()
+
+# ======================================
+# Week 2 Test Executables
+# ======================================
+
+# STEP A: Depth Lifting Test
+add_project_executable(test_depth_lifting tests/test_depth_lifting.cpp)
 
 # STEP B: PCA Coefficient Evaluation Test (only needs MorphableModel, no OpenCV)
 set(PCA_SOURCES
@@ -111,230 +164,40 @@ add_executable(test_pca_coeffs
     tests/test_pca_coeffs.cpp
     ${PCA_SOURCES}
 )
+target_link_libraries(test_pca_coeffs Eigen3::Eigen)
+target_include_directories(test_pca_coeffs PUBLIC ${CMAKE_SOURCE_DIR}/include)
+if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+    target_compile_options(test_pca_coeffs PRIVATE -Wall -Wextra)
+endif()
 
 # STEP C: Landmark I/O Test
-add_executable(test_landmarks_io
-    tests/test_landmarks_io.cpp
-    ${SOURCES}
-    ${HEADERS}
-)
+add_project_executable(test_landmarks_io tests/test_landmarks_io.cpp)
 
 # STEP D: Pose Initialization Test
-add_executable(test_pose_init
-    tests/test_pose_init.cpp
-    ${SOURCES}
-    ${HEADERS}
-)
+add_project_executable(test_pose_init tests/test_pose_init.cpp)
 
-# Week 3 - STEP 1: Landmark Mapping Validation
-add_executable(test_landmark_mapping
-    tests/test_landmark_mapping.cpp
-    ${SOURCES}
-    ${HEADERS}
-)
+# ======================================
+# Week 3 Test Executables
+# ======================================
 
-# Week 3 - STEP 3: Depth Renderer Test
-add_executable(test_depth_renderer
-    tests/test_depth_renderer.cpp
-    ${SOURCES}
-    ${HEADERS}
-)
+# STEP 1: Landmark Mapping Validation
+add_project_executable(test_landmark_mapping tests/test_landmark_mapping.cpp)
 
-# Week 3 - STEP 4: Depth Residual Computation
-add_executable(test_depth_residuals
-    tests/test_depth_residuals.cpp
-    ${SOURCES}
-    ${HEADERS}
-)
+# STEP 3: Depth Renderer Test
+add_project_executable(test_depth_renderer tests/test_depth_renderer.cpp)
 
-# Pipeline Tools: Mapping Validation
-add_executable(validate_mapping
-    src/tools/validate_mapping.cpp
-    src/model/MorphableModel.cpp
-    src/alignment/LandmarkMapping.cpp
-    ${HEADERS}
-)
+# STEP 4: Depth Residual Computation
+add_project_executable(test_depth_residuals tests/test_depth_residuals.cpp)
 
-# Pipeline Tools: Analysis (RMSE, depth stats, visualization)
-add_executable(analysis
-    src/tools/analysis.cpp
-    src/data/RGBDFrame.cpp
-    src/camera/CameraIntrinsics.cpp
-    src/utils/DepthUtils.cpp
-    ${HEADERS}
-)
+# STEP 5: ICP Validation
+add_project_executable(test_icp_validation tests/test_icp_validation.cpp)
 
-# Week 3 - STEP 5: ICP Validation
-add_executable(test_icp_validation
-    tests/test_icp_validation.cpp
-    ${SOURCES}
-    ${HEADERS}
-)
-
-# Link libraries
-target_link_libraries(${PROJECT_NAME}
-    Eigen3::Eigen
-)
-
-target_link_libraries(face_reconstruction
-    Eigen3::Eigen
-)
-
-target_link_libraries(pose_init
-    Eigen3::Eigen
-)
-
-target_link_libraries(test_depth_lifting
-    Eigen3::Eigen
-)
-
-target_link_libraries(test_pca_coeffs
-    Eigen3::Eigen
-)
-
-target_link_libraries(test_landmarks_io
-    Eigen3::Eigen
-)
-
-target_link_libraries(test_pose_init
-    Eigen3::Eigen
-)
-
-target_link_libraries(test_landmark_mapping
-    Eigen3::Eigen
-)
-
-target_link_libraries(test_depth_renderer
-    Eigen3::Eigen
-)
-
-target_link_libraries(test_depth_residuals
-    Eigen3::Eigen
-)
-
-target_link_libraries(test_icp_validation
-    Eigen3::Eigen
-)
-
-target_link_libraries(validate_mapping
-    Eigen3::Eigen
-)
-
-target_link_libraries(analysis
-    Eigen3::Eigen
-)
-
-if(OpenCV_FOUND)
-    target_link_libraries(${PROJECT_NAME} ${OpenCV_LIBS})
-    target_link_libraries(face_reconstruction ${OpenCV_LIBS})
-    target_link_libraries(pose_init ${OpenCV_LIBS})
-    target_link_libraries(test_depth_lifting ${OpenCV_LIBS})
-    target_link_libraries(test_landmarks_io ${OpenCV_LIBS})
-    target_link_libraries(test_pose_init ${OpenCV_LIBS})
-    target_link_libraries(test_landmark_mapping ${OpenCV_LIBS})
-    target_link_libraries(test_depth_renderer ${OpenCV_LIBS})
-    target_link_libraries(test_depth_residuals ${OpenCV_LIBS})
-    target_link_libraries(test_icp_validation ${OpenCV_LIBS})
-    target_link_libraries(analysis ${OpenCV_LIBS})
-    target_include_directories(${PROJECT_NAME} PUBLIC ${OpenCV_INCLUDE_DIRS})
-    target_include_directories(face_reconstruction PUBLIC ${OpenCV_INCLUDE_DIRS})
-    target_include_directories(pose_init PUBLIC ${OpenCV_INCLUDE_DIRS})
-    target_include_directories(test_depth_lifting PUBLIC ${OpenCV_INCLUDE_DIRS})
-    target_include_directories(test_landmarks_io PUBLIC ${OpenCV_INCLUDE_DIRS})
-    target_include_directories(test_pose_init PUBLIC ${OpenCV_INCLUDE_DIRS})
-    target_include_directories(test_landmark_mapping PUBLIC ${OpenCV_INCLUDE_DIRS})
-    target_include_directories(test_depth_renderer PUBLIC ${OpenCV_INCLUDE_DIRS})
-    target_include_directories(test_depth_residuals PUBLIC ${OpenCV_INCLUDE_DIRS})
-    target_include_directories(test_icp_validation PUBLIC ${OpenCV_INCLUDE_DIRS})
-    target_include_directories(analysis PUBLIC ${OpenCV_INCLUDE_DIRS})
-else()
-    # Add dummy OpenCV defines to allow code to compile
-    target_compile_definitions(${PROJECT_NAME} PRIVATE OPENCV_NOT_FOUND)
-    target_compile_definitions(face_reconstruction PRIVATE OPENCV_NOT_FOUND)
-    target_compile_definitions(pose_init PRIVATE OPENCV_NOT_FOUND)
-    target_compile_definitions(test_depth_lifting PRIVATE OPENCV_NOT_FOUND)
-    target_compile_definitions(test_landmarks_io PRIVATE OPENCV_NOT_FOUND)
-    target_compile_definitions(test_pose_init PRIVATE OPENCV_NOT_FOUND)
-    target_compile_definitions(test_landmark_mapping PRIVATE OPENCV_NOT_FOUND)
-    target_compile_definitions(test_depth_renderer PRIVATE OPENCV_NOT_FOUND)
-    target_compile_definitions(test_depth_residuals PRIVATE OPENCV_NOT_FOUND)
-    target_compile_definitions(test_icp_validation PRIVATE OPENCV_NOT_FOUND)
-    target_compile_definitions(analysis PRIVATE OPENCV_NOT_FOUND)
-    message(WARNING "Compiling without OpenCV - RGB-D features will not work")
-endif()
-
-# Include directories for targets
-target_include_directories(${PROJECT_NAME} PUBLIC
-    ${CMAKE_SOURCE_DIR}/include
-)
-
-target_include_directories(face_reconstruction PUBLIC
-    ${CMAKE_SOURCE_DIR}/include
-)
-
-target_include_directories(pose_init PUBLIC
-    ${CMAKE_SOURCE_DIR}/include
-)
-
-target_include_directories(test_depth_lifting PUBLIC
-    ${CMAKE_SOURCE_DIR}/include
-)
-
-target_include_directories(test_pca_coeffs PUBLIC
-    ${CMAKE_SOURCE_DIR}/include
-)
-# test_pca_coeffs doesn't need OpenCV
-
-target_include_directories(test_landmarks_io PUBLIC
-    ${CMAKE_SOURCE_DIR}/include
-)
-
-target_include_directories(test_pose_init PUBLIC
-    ${CMAKE_SOURCE_DIR}/include
-)
-
-target_include_directories(test_landmark_mapping PUBLIC
-    ${CMAKE_SOURCE_DIR}/include
-)
-
-target_include_directories(test_depth_renderer PUBLIC
-    ${CMAKE_SOURCE_DIR}/include
-)
-
-target_include_directories(test_depth_residuals PUBLIC
-    ${CMAKE_SOURCE_DIR}/include
-)
-
-target_include_directories(test_icp_validation PUBLIC
-    ${CMAKE_SOURCE_DIR}/include
-)
-
-# Compiler options
-if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
-    target_compile_options(${PROJECT_NAME} PRIVATE -Wall -Wextra)
-    target_compile_options(face_reconstruction PRIVATE -Wall -Wextra)
-    target_compile_options(pose_init PRIVATE -Wall -Wextra)
-    target_compile_options(test_depth_lifting PRIVATE -Wall -Wextra)
-    target_compile_options(test_pca_coeffs PRIVATE -Wall -Wextra)
-    target_compile_options(test_landmarks_io PRIVATE -Wall -Wextra)
-    target_compile_options(test_pose_init PRIVATE -Wall -Wextra)
-    target_compile_options(test_landmark_mapping PRIVATE -Wall -Wextra)
-    target_compile_options(test_depth_renderer PRIVATE -Wall -Wextra)
-    target_compile_options(test_depth_residuals PRIVATE -Wall -Wextra)
-    target_compile_options(test_icp_validation PRIVATE -Wall -Wextra)
-endif()
-
-# Debug info
-if(CMAKE_BUILD_TYPE STREQUAL "Debug")
-    target_compile_definitions(${PROJECT_NAME} PRIVATE DEBUG=1)
-    target_compile_definitions(face_reconstruction PRIVATE DEBUG=1)
-    target_compile_definitions(pose_init PRIVATE DEBUG=1)
-    target_compile_definitions(test_depth_lifting PRIVATE DEBUG=1)
-    target_compile_definitions(test_pca_coeffs PRIVATE DEBUG=1)
-    target_compile_definitions(test_landmarks_io PRIVATE DEBUG=1)
-    target_compile_definitions(test_pose_init PRIVATE DEBUG=1)
-    target_compile_definitions(test_landmark_mapping PRIVATE DEBUG=1)
-    target_compile_definitions(test_depth_renderer PRIVATE DEBUG=1)
-    target_compile_definitions(test_depth_residuals PRIVATE DEBUG=1)
-    target_compile_definitions(test_icp_validation PRIVATE DEBUG=1)
-endif()
+# Print build summary
+message(STATUS "")
+message(STATUS "=== Build Summary ===")
+message(STATUS "Build type: ${CMAKE_BUILD_TYPE}")
+message(STATUS "C++ standard: ${CMAKE_CXX_STANDARD}")
+message(STATUS "OpenCV: ${OpenCV_FOUND}")
+message(STATUS "Eigen3: ${Eigen3_FOUND}")
+message(STATUS "Output directory: ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}")
+message(STATUS "")

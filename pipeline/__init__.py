@@ -1,34 +1,35 @@
 """
 Modular pipeline architecture for 3D face reconstruction.
 
-All infrastructure is consolidated in the parent pipeline.py module.
+All infrastructure is consolidated in the main.py module.
 Steps are in pipeline/steps/.
 """
 
-# Import from parent directory's pipeline.py
+# Import from main.py
 # Use importlib to avoid circular imports
 import sys
 import importlib.util
 from pathlib import Path
 
-# Get the parent directory (scripts/)
-_parent_dir = Path(__file__).parent.parent
+# Paths
+_pipeline_dir = Path(__file__).parent
+_repo_root = _pipeline_dir.parent
 
-# Add parent directory to path if not already there
-if str(_parent_dir) not in sys.path:
-    sys.path.insert(0, str(_parent_dir))
+# Ensure repo root and pipeline/ are on sys.path
+for _p in (_repo_root, _pipeline_dir):
+    if str(_p) not in sys.path:
+        sys.path.insert(0, str(_p))
 
-# Load pipeline.py as a module file (not as a package)
-# This avoids circular import issues
-_pipeline_file = _parent_dir / "pipeline.py"
-if not _pipeline_file.exists():
-    raise ImportError(f"pipeline.py not found at {_pipeline_file}")
+# Load pipeline/main.py as a module file (not as a package)
+_main_file = _pipeline_dir / "main.py"
+if not _main_file.exists():
+    raise ImportError(f"main.py not found at {_main_file}")
 
-# Always load pipeline.py as a separate module to avoid circular imports
-# This ensures we get a fully initialized module even when pipeline.py is being executed
-spec = importlib.util.spec_from_file_location("_pipeline_core", _pipeline_file)
+# Always load main.py as a separate module to avoid circular imports
+# This ensures we get a fully initialized module even when main.py is being executed
+spec = importlib.util.spec_from_file_location("_pipeline_core", _main_file)
 if spec is None or spec.loader is None:
-    raise ImportError(f"Failed to create spec for {_pipeline_file}")
+    raise ImportError(f"Failed to create spec for {_main_file}")
 
 # Use a stable module name to avoid conflicts
 _module_name = "_pipeline_core"
@@ -40,7 +41,7 @@ else:
     pipeline_module = importlib.util.module_from_spec(spec)
     # Set module attributes before execution so classes have correct __module__
     pipeline_module.__name__ = _module_name
-    pipeline_module.__file__ = str(_pipeline_file)
+    pipeline_module.__file__ = str(_main_file)
     # Register in sys.modules BEFORE execution so dataclass can find it
     sys.modules[_module_name] = pipeline_module
     # Now execute the module

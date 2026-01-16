@@ -5,7 +5,7 @@ Data conversion step: Convert raw Biwi data to standardized format.
 from pathlib import Path
 from typing import List, Optional, Tuple
 
-from pipeline import (
+from main import (
     PipelineStep,
     StepResult,
     StepStatus,
@@ -17,9 +17,20 @@ from pipeline import (
     read_biwi_calibration,
 )
 
+# Lazy import for point cloud creation (optional - for visualization only)
+try:
+    from pipeline.utils.create_pointcloud_from_rgbd import create_pointcloud_from_rgbd
+except Exception:
+    create_pointcloud_from_rgbd = None
+
 
 class ConversionStep(PipelineStep):
     """Convert raw Biwi sequences to standardized format."""
+    
+    @staticmethod
+    def _should_skip_sequence(name: str) -> bool:
+        """Ignore temporary or helper folders that are not real sequences."""
+        return name.startswith("temp_")
     
     @property
     def name(self) -> str:
@@ -34,22 +45,13 @@ class ConversionStep(PipelineStep):
         raw_root = Path(self.config["raw_root"])
         output_root = Path(self.config["output_root"])
         max_frames = self.config.get("max_frames", 0)
-        sequence_filter = self.config.get("sequence")  # Can be None, single string, or list
         intrinsics_override = self.config.get("intrinsics")
         
-        # Handle multiple sequence filters
-        if sequence_filter is None:
-            # Process all sequences
-            sequence_dirs = sorted([p for p in raw_root.iterdir() if p.is_dir()])
-        elif isinstance(sequence_filter, list):
-            # Process specific sequences
-            filter_set = set(sequence_filter)
-            sequence_dirs = sorted([p for p in raw_root.iterdir() 
-                                   if p.is_dir() and p.name in filter_set])
-        else:
-            # Single sequence (backward compatibility)
-            sequence_dirs = sorted([p for p in raw_root.iterdir() 
-                                   if p.is_dir() and p.name == sequence_filter])
+        # Always process all sequences under raw_root
+        sequence_dirs = sorted([
+            p for p in raw_root.iterdir()
+            if p.is_dir() and not self._should_skip_sequence(p.name)
+        ])
         
         if not sequence_dirs:
             return StepResult(StepStatus.FAILED, "No sequences found to process")
@@ -95,12 +97,14 @@ class ConversionStep(PipelineStep):
         rgb_out_dir = output_dir / "rgb"
         depth_out_dir = output_dir / "depth"
         depth_vis_dir = output_dir / "depth_vis"
+        pc_out_dir = output_dir / "pointclouds"
         success_rgb = success_depth = 0
         
         for idx, (rgb_path, depth_path) in enumerate(pairs):
             rgb_out = rgb_out_dir / f"frame_{idx:05d}.png"
             depth_out = depth_out_dir / f"frame_{idx:05d}.png"
             depth_vis_out = depth_vis_dir / f"frame_{idx:05d}.png"
+            pc_out = pc_out_dir / f"frame_{idx:05d}.ply"
             
             if copy_rgb(rgb_path, rgb_out):
                 success_rgb += 1
@@ -108,6 +112,18 @@ class ConversionStep(PipelineStep):
                 success_depth += 1
                 # Create depth visualization for better viewing
                 create_depth_visualization(depth_out, depth_vis_out)
+                # Create point cloud if utility is available
+                if create_pointcloud_from_rgbd:
+                    try:
+                        create_pointcloud_from_rgbd(
+                            rgb_out,
+                            depth_out,
+                            output_dir / "intrinsics.txt",
+                            pc_out,
+                            depth_scale=1000.0,
+                        )
+                    except Exception:
+                        pass
             if (idx + 1) % 10 == 0 or idx == len(pairs) - 1:
                 self.logger.progress(idx + 1, len(pairs), f"frames in {seq_dir.name}")
         
