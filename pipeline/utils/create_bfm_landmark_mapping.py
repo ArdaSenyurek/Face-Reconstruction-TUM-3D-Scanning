@@ -9,6 +9,21 @@ Generates accurate landmark-to-vertex mapping by:
 
 Usage:
     python pipeline/utils/create_bfm_landmark_mapping.py
+
+NOTE: The BFM model only provides ~30 semantic landmarks (eyes, nose, mouth, etc.)
+      but NOT the jaw contour (dlib landmarks 0-16). The current mapping covers:
+      - Chin tip (dlib 8)
+      - Eyebrows (dlib 17, 19, 22, 24)
+      - Nose (dlib 30-35)
+      - Eyes (dlib 36-47)
+      - Mouth (dlib 48-67)
+
+      To add jaw contour landmarks (dlib 0-7 and 9-16), you would need to:
+      1. Load the BFM mean shape in MeshLab or similar 3D viewer
+      2. Visually identify vertices along the jaw contour
+      3. Record vertex indices and add to DLIB_TO_BFM_MAP below
+      
+      The current 31 landmarks provide good alignment for most use cases.
 """
 
 import numpy as np

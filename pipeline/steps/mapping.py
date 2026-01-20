@@ -21,7 +21,7 @@ class MappingSetupStep(PipelineStep):
     
     def execute(self) -> StepResult:
         """Check if mapping exists, optionally create it. Uses C++ validate_mapping binary."""
-        mapping_path = Path(self.config.get("landmark_mapping", "data/landmark_mapping.txt"))
+        mapping_path = Path(self.config.get("landmark_mapping", "data/bfm_landmark_68.txt"))
         model_dir = Path(self.config.get("model_dir", "data/model_biwi"))
         auto_generate = self.config.get("auto_generate_mapping", True)  # Default: enabled
         min_mappings = self.config.get("min_mapping_count", 30)  # Default: 30 mappings

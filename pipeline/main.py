@@ -911,9 +911,9 @@ Examples:
     parser.add_argument("--model-dir", type=Path, default=DEFAULT_MODEL_DIR,
                       help=f"Model directory (default: {DEFAULT_MODEL_DIR})")
     
-    # Landmark mapping (auto-generation enabled by default)
-    parser.add_argument("--landmark-mapping", type=Path, default=Path("data/landmark_mapping.txt"),
-                      help="Path to landmark-to-model mapping file (default: data/landmark_mapping.txt)")
+    # Landmark mapping - use BFM semantic landmarks (correct correspondences)
+    parser.add_argument("--landmark-mapping", type=Path, default=Path("data/bfm_landmark_68.txt"),
+                      help="Path to landmark-to-model mapping file (default: data/bfm_landmark_68.txt)")
     parser.add_argument("--no-auto-generate-mapping", dest="auto_generate_mapping", action="store_false",
                       default=True, help="Disable auto-generation of landmark mapping (default: auto-generation is enabled)")
     parser.add_argument("--min-mapping-count", type=int, default=30,
