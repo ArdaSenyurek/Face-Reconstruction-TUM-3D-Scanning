@@ -57,10 +57,15 @@ class ReconstructionStep(PipelineStep):
             
             for frame in frames:
                 depth_frame = depth_dir / frame.name
-                mesh_out = meshes_root / seq_dir.name / f"{frame.stem}.ply"
                 
                 # Landmark file for this frame (saved as frame_00000.txt, not frame_00000_landmarks.txt)
                 landmarks_file = landmarks_root / seq_dir.name / f"{frame.stem}.txt"
+                
+                # Week 4: Save optimized mesh with _optimized suffix if optimization is enabled
+                if optimize and landmarks_file.exists():
+                    mesh_out = meshes_root / seq_dir.name / f"{frame.stem}_optimized.ply"
+                else:
+                    mesh_out = meshes_root / seq_dir.name / f"{frame.stem}.ply"
                 
                 pc_out = None
                 if save_pointclouds:

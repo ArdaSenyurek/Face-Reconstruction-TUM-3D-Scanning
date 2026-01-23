@@ -122,6 +122,9 @@ add_project_executable(face_reconstruction src/tools/face_reconstruction.cpp)
 # Pose initialization tool (Procrustes alignment)
 add_project_executable(pose_init src/tools/pose_init.cpp)
 
+# Week 4: Overlay generation tool
+add_project_executable(create_overlays src/tools/create_overlays.cpp)
+
 # Mapping Validation tool
 add_executable(validate_mapping
     src/tools/validate_mapping.cpp

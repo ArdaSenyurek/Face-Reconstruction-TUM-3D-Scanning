@@ -62,16 +62,18 @@ class PoseInitStep(PipelineStep):
                     continue
                 
                 output_mesh = pose_init_root / seq_id / f"{frame.stem}_aligned.ply"
+                report_json = pose_init_root / seq_id / f"{frame.stem}_rigid_report.json"
                 
                 success = self._run_pose_init(
                     binary, model_dir, mapping_path, intrinsics_path,
-                    frame, depth_frame, landmark_file, output_mesh, timeout
+                    frame, depth_frame, landmark_file, output_mesh, report_json, timeout
                 )
                 
                 pose_reports.append({
                     "sequence": seq_id,
                     "frame": frame.name,
                     "aligned_mesh": str(output_mesh),
+                    "rigid_report": str(report_json) if report_json.exists() else None,
                     "success": success
                 })
                 
@@ -86,7 +88,7 @@ class PoseInitStep(PipelineStep):
     
     def _run_pose_init(self, binary: Path, model_dir: Path, mapping_path: Path,
                       intrinsics: Path, rgb: Path, depth: Path, landmarks: Path,
-                      output_mesh: Path, timeout: int) -> bool:
+                      output_mesh: Path, report_json: Path, timeout: int) -> bool:
         """Run the pose initialization binary."""
         cmd = [
             str(binary),
@@ -97,6 +99,7 @@ class PoseInitStep(PipelineStep):
             "--model-dir", str(model_dir),
             "--mapping", str(mapping_path),
             "--output", str(output_mesh),
+            "--report", str(report_json),
         ]
         
         output_mesh.parent.mkdir(parents=True, exist_ok=True)

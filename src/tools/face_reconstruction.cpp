@@ -288,6 +288,13 @@ int main(int argc, char* argv[]) {
     params.lambda_alpha = lambda_reg;
     params.lambda_delta = lambda_reg;
     
+    // Week 4: Enable shape coefficient optimization when --optimize is passed
+    // Pose fixed from Procrustes, only expression coefficients optimized
+    params.optimize_expression = optimize;  // Enable expression coefficients
+    params.optimize_identity = false;       // Keep identity fixed for stability
+    params.optimize_rotation = false;       // Pose fixed
+    params.optimize_translation = false;    // Pose fixed
+    
     // Scale factor from Procrustes (BFM mm -> camera meters)
     double pose_scale = 1.0;
     

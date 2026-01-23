@@ -589,6 +589,7 @@ class PipelineOrchestrator:
             PoseInitStep,
             ReconstructionStep,
         )
+        from pipeline.steps.week4_overlays import Week4OverlayStep
         from pipeline.steps.preflight import PreflightStep
         
         start_time = time.time()
@@ -729,6 +730,24 @@ class PipelineOrchestrator:
                 self.state["pose_init_reports"] = result.data.get("reports", [])
         else:
             self.logger.step_skip("Pose Initialization", "configured to skip or no data")
+        
+        # Step 7.5: Week 4 Overlays (after rigid alignment)
+        if (self.config.get("make_overlays", False) and 
+            "pose_init_reports" in self.state and
+            "conversion_reports" in self.state):
+            step = Week4OverlayStep(self.logger, {
+                "overlay_binary": self.config.get("overlay_binary", Path("build/bin/create_overlays")),
+                "pose_init_reports": self.state.get("pose_init_reports", []),
+                "conversion_reports": self.state.get("conversion_reports", []),
+                "overlays_3d_root": self.config["output_root"] / "overlays3d",
+                "overlays_2d_root": self.config["output_root"] / "overlays2d",
+                "depth_overlay_root": self.config["output_root"] / "depth_overlay",
+                "target_sequences": self.config.get("target_sequences", ["01", "17"]),
+            })
+            result = step.run()
+            self._record_result("week4_overlays", result)
+        else:
+            self.logger.step_skip("Week 4 Overlays", "configured to skip or no data")
         
         # Step 8: Reconstruction (Week 4: with optimization support)
         if not self.config.get("skip_reconstruct", False) and "conversion_reports" in self.state:
@@ -943,6 +962,12 @@ Examples:
     parser.add_argument("--bfm-dir", type=Path, default=DEFAULT_BFM_DIR,
                       help=f"BFM source directory (default: {DEFAULT_BFM_DIR})")
     
+    # Week 4: Overlay generation
+    parser.add_argument("--make-overlays", action="store_true",
+                      help="Generate mesh-scan overlay visualizations (Week 4)")
+    parser.add_argument("--target-sequences", type=str, nargs="+", default=["01", "17"],
+                      help="Sequences to generate overlays for (default: 01 17)")
+    
     return parser
 
 
@@ -1001,6 +1026,9 @@ def main() -> int:
         "lambda_depth": args.lambda_depth,
         "lambda_reg": args.lambda_reg,
         "verbose_optimize": args.verbose_optimize,
+        # Week 4: Overlay generation
+        "make_overlays": args.make_overlays,
+        "target_sequences": args.target_sequences,
     }
     
     # Run pipeline

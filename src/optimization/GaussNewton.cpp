@@ -169,10 +169,19 @@ OptimizationResult GaussNewtonOptimizer::optimize(
         params = best_params;
         result.energy_history.push_back(best_energy);
         
-        if (verbose_ && (iter % 5 == 0 || iter < 5)) {
-            std::cout << "Iter " << std::setw(3) << iter + 1 
-                      << ": energy = " << std::setprecision(6) << best_energy
-                      << ", delta_norm = " << std::setprecision(4) << delta.norm()
+        // Compute per-term energies for logging
+        double lm_energy = energy_func_.computeLandmarkEnergy(params, landmarks, mapping);
+        double depth_energy = energy_func_.computeDepthEnergy(params, observed_depth);
+        double reg_energy = energy_func_.computeRegularization(params);
+        
+        if (verbose_ || iter < 10 || iter % 5 == 0) {
+            std::cout << "Iter " << std::setw(3) << iter + 1 << ": "
+                      << "total=" << std::fixed << std::setprecision(6) << best_energy
+                      << " (lm=" << std::setprecision(4) << lm_energy
+                      << ", depth=" << depth_energy
+                      << ", reg=" << reg_energy << "), "
+                      << "step_norm=" << std::setprecision(4) << (delta * step).norm()
+                      << ", damping=" << std::setprecision(2) << damping_
                       << std::endl;
         }
         
