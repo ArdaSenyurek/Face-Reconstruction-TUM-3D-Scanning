@@ -4,6 +4,7 @@ opencv-python>=4.5.0
 
 # Optional but recommended
 scipy>=1.7.0
+matplotlib>=3.5.0  # For Week 5 tracking plots
 
 # Build tools (for compiling packages like dlib)
 setuptools>=65.0.0

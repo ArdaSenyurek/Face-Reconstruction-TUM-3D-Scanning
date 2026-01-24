@@ -132,6 +132,40 @@ python pipeline/main.py --optimize \
     --verbose-optimize
 ```
 
+### Week 5: Tracking Mode (Sequence Processing)
+
+Process multiple frames with temporal continuity:
+
+```bash
+# Basic tracking (warm-start from previous frame)
+python pipeline/main.py --track --optimize --frames 20 \
+    --target-sequences 01 17
+
+# With temporal smoothing (reduces jitter)
+python pipeline/main.py --track --optimize --frames 20 \
+    --temporal-smoothing \
+    --smooth-pose-alpha 0.7 \
+    --smooth-expr-alpha 0.7
+
+# With periodic re-initialization (every 10 frames)
+python pipeline/main.py --track --optimize --frames 20 \
+    --temporal-smoothing \
+    --reinit-every 10 \
+    --drift-rmse-thresh 80
+
+# Generate tracking metric plots
+python scripts/plot_tracking_metrics.py --seq 01 17
+```
+
+| Tracking Option | Description | Default |
+|----------------|-------------|---------|
+| `--track` | Enable sequential tracking mode | Off |
+| `--temporal-smoothing` | Smooth pose/expression over time | Off |
+| `--smooth-pose-alpha` | EMA alpha for pose (0-1) | 0.7 |
+| `--smooth-expr-alpha` | EMA alpha for expression (0-1) | 0.7 |
+| `--reinit-every N` | Re-run Procrustes every N frames | 0 (never) |
+| `--drift-rmse-thresh` | RMSE threshold (mm) for auto re-init | 80 |
+
 ## Output Structure
 
 ```
@@ -148,10 +182,28 @@ outputs/
 ├── meshes/              # Final reconstructed faces (PLY)
 │   └── 01/
 │       ├── frame_00000.ply
-│       └── frame_00001.ply
+│       ├── frame_00000_tracked.ply   # Week 5: Tracking output
+│       └── frame_00001_tracked.ply
+├── tracking/            # Week 5: Tracking state files
+│   └── state/01/
+│       ├── frame_00000_init.json
+│       └── frame_00000_final.json
+├── overlays_3d/         # 3D mesh-scan overlays (PLY)
+│   └── 01/
+│       ├── frame_00000_overlay_rigid.ply
+│       └── frame_00000_overlay_opt.ply
 ├── analysis/
-│   ├── metrics.json     # RMSE and statistics
-│   └── pointclouds/     # Depth point clouds
+│   ├── metrics.json
+│   ├── tracking_summary_01.json   # Week 5: Per-sequence tracking
+│   ├── tracking_summary_01.csv
+│   ├── depth_residual_vis/        # Week 5: Depth residuals
+│   │   └── 01/
+│   ├── plots/                     # Week 5: Metric plots
+│   │   └── 01/
+│   │       ├── rmse_vs_frame.png
+│   │       ├── translation_vs_frame.png
+│   │       └── metrics_overview.png
+│   └── pointclouds/
 └── logs/
     ├── pipeline_summary.json
     └── pipeline_*.log
@@ -188,8 +240,10 @@ Check reconstruction quality in `outputs/analysis/metrics.json`:
 6. **Landmarks**: Detect 68 facial landmarks
 7. **Mapping**: Validate landmark-to-vertex mapping
 8. **Pose Init**: Initial pose via Procrustes alignment
-9. **Reconstruction**: Gauss-Newton optimization
-10. **Analysis**: Compute RMSE metrics
+9. **Reconstruction** or **Tracking** (Week 5):
+   - Standard: Single-frame Gauss-Newton optimization
+   - Tracking: Sequential processing with temporal continuity
+10. **Analysis**: Compute RMSE metrics and generate visualizations
 
 ## Troubleshooting
 

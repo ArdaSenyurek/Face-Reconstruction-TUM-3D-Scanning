@@ -1,11 +1,15 @@
 /**
- * Face Reconstruction Tool (Week 4: With Optimization)
+ * Face Reconstruction Tool (Week 5: With Tracking Support)
  * 
  * Main 3D face reconstruction executable called by Python pipeline.
  * Reconstructs 3D face meshes from RGB-D data using a PCA morphable model
  * and Gauss-Newton optimization.
  * 
- * Pipeline Step: ReconstructionStep (Python)
+ * Week 5 additions:
+ *   --init-pose-json    Load initial pose/expression from JSON (for tracking warm-start)
+ *   --output-state-json Save final pose/expression to JSON (for next frame)
+ * 
+ * Pipeline Step: ReconstructionStep / TrackingStep (Python)
  * 
  * Usage:
  *   build/bin/face_reconstruction --rgb <path> --depth <path> \
@@ -33,6 +37,7 @@
 #include <vector>
 #include <fstream>
 #include <iomanip>
+#include <sstream>
 
 using namespace face_reconstruction;
 
@@ -84,6 +89,168 @@ Eigen::MatrixXd applyPoseToVertices(const Eigen::MatrixXd& vertices,
     return transformed;
 }
 
+/**
+ * Week 5: Simple JSON parsing for tracking state
+ * Parses a minimal JSON format for pose and expression coefficients
+ */
+bool loadTrackingStateJSON(const std::string& filepath,
+                           Eigen::Matrix3d& R,
+                           Eigen::Vector3d& t,
+                           double& scale,
+                           Eigen::VectorXd& expression) {
+    std::ifstream file(filepath);
+    if (!file.is_open()) {
+        std::cerr << "Failed to open tracking state file: " << filepath << std::endl;
+        return false;
+    }
+    
+    std::string content((std::istreambuf_iterator<char>(file)),
+                        std::istreambuf_iterator<char>());
+    file.close();
+    
+    // Simple JSON parsing (not a full parser, but sufficient for our format)
+    auto findValue = [&content](const std::string& key) -> std::string {
+        size_t pos = content.find("\"" + key + "\"");
+        if (pos == std::string::npos) return "";
+        pos = content.find(":", pos);
+        if (pos == std::string::npos) return "";
+        pos++;
+        while (pos < content.size() && (content[pos] == ' ' || content[pos] == '\n')) pos++;
+        
+        size_t start = pos;
+        if (content[pos] == '[') {
+            // Find matching bracket
+            int depth = 1;
+            pos++;
+            while (pos < content.size() && depth > 0) {
+                if (content[pos] == '[') depth++;
+                else if (content[pos] == ']') depth--;
+                pos++;
+            }
+            return content.substr(start, pos - start);
+        } else {
+            // Find number or string end
+            while (pos < content.size() && content[pos] != ',' && content[pos] != '}' && content[pos] != '\n') pos++;
+            return content.substr(start, pos - start);
+        }
+    };
+    
+    auto parseDoubleArray = [](const std::string& arr) -> std::vector<double> {
+        std::vector<double> result;
+        std::string cleaned;
+        for (char c : arr) {
+            if (c == '[' || c == ']' || c == ' ' || c == '\n') continue;
+            cleaned += c;
+        }
+        std::stringstream ss(cleaned);
+        std::string token;
+        while (std::getline(ss, token, ',')) {
+            if (!token.empty()) {
+                try {
+                    result.push_back(std::stod(token));
+                } catch (...) {}
+            }
+        }
+        return result;
+    };
+    
+    // Parse scale
+    std::string scale_str = findValue("scale");
+    if (!scale_str.empty()) {
+        try {
+            scale = std::stod(scale_str);
+        } catch (...) {
+            scale = 1.0;
+        }
+    }
+    
+    // Parse translation
+    std::string trans_str = findValue("translation");
+    if (!trans_str.empty()) {
+        auto trans = parseDoubleArray(trans_str);
+        if (trans.size() >= 3) {
+            t = Eigen::Vector3d(trans[0], trans[1], trans[2]);
+        }
+    }
+    
+    // Parse rotation (3x3 matrix as nested array)
+    std::string rot_str = findValue("rotation");
+    if (!rot_str.empty()) {
+        auto rot = parseDoubleArray(rot_str);
+        if (rot.size() >= 9) {
+            R << rot[0], rot[1], rot[2],
+                 rot[3], rot[4], rot[5],
+                 rot[6], rot[7], rot[8];
+        }
+    }
+    
+    // Parse expression coefficients
+    std::string expr_str = findValue("expression");
+    if (!expr_str.empty()) {
+        auto expr = parseDoubleArray(expr_str);
+        expression.resize(expr.size());
+        for (size_t i = 0; i < expr.size(); ++i) {
+            expression(i) = expr[i];
+        }
+    }
+    
+    return true;
+}
+
+/**
+ * Week 5: Save tracking state to JSON
+ */
+bool saveTrackingStateJSON(const std::string& filepath,
+                           const Eigen::Matrix3d& R,
+                           const Eigen::Vector3d& t,
+                           double scale,
+                           const Eigen::VectorXd& expression,
+                           double last_rmse_mm = 0.0) {
+    std::ofstream file(filepath);
+    if (!file.is_open()) {
+        std::cerr << "Failed to open file for writing: " << filepath << std::endl;
+        return false;
+    }
+    
+    file << std::fixed << std::setprecision(8);
+    file << "{\n";
+    
+    // Rotation matrix
+    file << "  \"rotation\": [\n";
+    for (int i = 0; i < 3; ++i) {
+        file << "    [" << R(i, 0) << ", " << R(i, 1) << ", " << R(i, 2) << "]";
+        if (i < 2) file << ",";
+        file << "\n";
+    }
+    file << "  ],\n";
+    
+    // Translation
+    file << "  \"translation\": [" << t(0) << ", " << t(1) << ", " << t(2) << "],\n";
+    
+    // Scale
+    file << "  \"scale\": " << scale << ",\n";
+    
+    // Expression coefficients
+    file << "  \"expression\": [";
+    for (int i = 0; i < expression.size(); ++i) {
+        if (i > 0) file << ", ";
+        file << expression(i);
+    }
+    file << "],\n";
+    
+    // Identity (empty for now)
+    file << "  \"identity\": [],\n";
+    
+    // Metadata
+    file << "  \"frame_idx\": 0,\n";
+    file << "  \"reinit_count\": 0,\n";
+    file << "  \"last_rmse_mm\": " << last_rmse_mm << "\n";
+    
+    file << "}\n";
+    file.close();
+    return true;
+}
+
 void printUsage(const char* program_name) {
     std::cout << "Usage: " << program_name << " [options]\n"
               << "Options:\n"
@@ -105,6 +272,10 @@ void printUsage(const char* program_name) {
               << "  --verbose                 Print detailed optimization output\n"
               << "  --help                    Show this help message\n"
               << "\n"
+              << "Week 5 Tracking Options:\n"
+              << "  --init-pose-json <path>   Load initial pose/expression from JSON\n"
+              << "  --output-state-json <path> Save final pose/expression to JSON\n"
+              << "\n"
               << "Example:\n"
               << "  " << program_name << " --rgb data/rgb.png --depth data/depth.png \\\n"
               << "     --intrinsics data/intrinsics.txt --model-dir data/model_bfm \\\n"
@@ -115,6 +286,7 @@ void printUsage(const char* program_name) {
 int main(int argc, char* argv[]) {
     std::string rgb_path, depth_path, intrinsics_path, model_dir;
     std::string landmarks_path, mapping_path, output_mesh, output_pointcloud;
+    std::string init_pose_json, output_state_json;  // Week 5: Tracking support
     double depth_scale = 1000.0;
     bool optimize = false;
     bool verbose = false;
@@ -147,6 +319,10 @@ int main(int argc, char* argv[]) {
             output_mesh = argv[++i];
         } else if (arg == "--output-pointcloud" && i + 1 < argc) {
             output_pointcloud = argv[++i];
+        } else if (arg == "--init-pose-json" && i + 1 < argc) {
+            init_pose_json = argv[++i];  // Week 5
+        } else if (arg == "--output-state-json" && i + 1 < argc) {
+            output_state_json = argv[++i];  // Week 5
         } else if (arg == "--optimize") {
             optimize = true;
         } else if (arg == "--no-optimize") {
@@ -302,12 +478,31 @@ int main(int argc, char* argv[]) {
     
     if (optimize && landmarks.size() > 0 && mapping.size() > 0) {
         // =========================================
-        // Week 4: Gauss-Newton Optimization
+        // Week 4/5: Gauss-Newton Optimization with Tracking Support
         // =========================================
         std::cout << "\n[8] Running Gauss-Newton optimization..." << std::endl;
         
-        // Initialize pose from Procrustes if we have depth and landmarks
-        if (points_3d.size() > 0) {
+        bool loaded_from_json = false;
+        
+        // Week 5: Try to load initial pose from JSON (tracking warm-start)
+        if (!init_pose_json.empty()) {
+            std::cout << "    Loading initial state from: " << init_pose_json << std::endl;
+            Eigen::VectorXd init_expression;
+            if (loadTrackingStateJSON(init_pose_json, params.R, params.t, params.scale, init_expression)) {
+                pose_scale = params.scale;
+                // Note: We only warm-start the pose (R, t, scale), not expression coefficients
+                // because the optimized expressions can be unstable and cause divergence.
+                // Expression starts from zero each frame for more stable results.
+                loaded_from_json = true;
+                std::cout << "    Loaded pose: scale=" << pose_scale 
+                          << ", t=[" << params.t.transpose() << "]" << std::endl;
+            } else {
+                std::cout << "    Warning: Failed to load tracking state, using Procrustes" << std::endl;
+            }
+        }
+        
+        // Initialize pose from Procrustes if not loaded from JSON
+        if (!loaded_from_json && points_3d.size() > 0) {
             std::cout << "    Initializing pose with Procrustes..." << std::endl;
             
             // Extract 3D points at landmark locations
@@ -385,6 +580,22 @@ int main(int argc, char* argv[]) {
         final_vertices = applyPoseToVertices(
             final_vertices, result.final_params.R, result.final_params.t, 
             result.final_params.scale);
+        
+        // Week 5: Save final state to JSON for tracking
+        if (!output_state_json.empty()) {
+            std::cout << "    Saving final state to: " << output_state_json << std::endl;
+            // Note: We use final energy as a proxy metric - actual 3D RMSE
+            // should be computed in Python from mesh vs scan point cloud
+            double final_energy = result.final_energy;
+            if (saveTrackingStateJSON(output_state_json, 
+                                      result.final_params.R, 
+                                      result.final_params.t,
+                                      result.final_params.scale,
+                                      result.final_params.delta,
+                                      final_energy)) {
+                std::cout << "    State saved successfully" << std::endl;
+            }
+        }
         
     } else {
         // =========================================
