@@ -2,8 +2,10 @@
 Pose initialization step using C++ Procrustes alignment.
 """
 import subprocess
+import json
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Dict, List
+from collections import defaultdict
 
 from main import PipelineStep, StepResult, StepStatus
 
@@ -69,11 +71,28 @@ class PoseInitStep(PipelineStep):
                     frame, depth_frame, landmark_file, output_mesh, report_json, timeout
                 )
                 
+                # Collect visualization file paths
+                viz_files = {}
+                if success and report_json.exists():
+                    # Check for visualization files
+                    base_path = output_mesh.parent / output_mesh.stem
+                    pre_alignment_ply = base_path.parent / f"{base_path.name}_pre_alignment.ply"
+                    post_procrustes_ply = base_path.parent / f"{base_path.name}_post_procrustes.ply"
+                    landmarks_overlay_png = base_path.parent / f"{base_path.name}_landmarks_overlay.png"
+                    
+                    if pre_alignment_ply.exists():
+                        viz_files["pre_alignment_ply"] = str(pre_alignment_ply)
+                    if post_procrustes_ply.exists():
+                        viz_files["post_procrustes_ply"] = str(post_procrustes_ply)
+                    if landmarks_overlay_png.exists():
+                        viz_files["landmarks_overlay_png"] = str(landmarks_overlay_png)
+                
                 pose_reports.append({
                     "sequence": seq_id,
                     "frame": frame.name,
                     "aligned_mesh": str(output_mesh),
                     "rigid_report": str(report_json) if report_json.exists() else None,
+                    "visualization_files": viz_files,
                     "success": success
                 })
                 
@@ -82,9 +101,25 @@ class PoseInitStep(PipelineStep):
                 else:
                     self.logger.warning(f"✗ {seq_id}/{frame.name} failed")
         
+        # Collect and log summary statistics
         successful = sum(1 for r in pose_reports if r["success"])
+        summary_stats = self._collect_summary_statistics(pose_reports)
+        
+        if summary_stats:
+            self.logger.info("\n=== Pose Initialization Summary ===")
+            if "mapping_quality" in summary_stats:
+                mq = summary_stats["mapping_quality"]
+                self.logger.info(f"Average mapping coverage: {mq.get('avg_coverage', 0):.1f}%")
+                self.logger.info(f"Average pre-alignment RMSE: {mq.get('avg_pre_rmse', 0):.2f} mm")
+            
+            if "procrustes_analysis" in summary_stats:
+                pa = summary_stats["procrustes_analysis"]
+                self.logger.info(f"Average post-ICP RMSE: {pa.get('avg_post_icp_rmse', 0):.2f} mm")
+                self.logger.info(f"Average improvement: {pa.get('avg_improvement', 0):.1f}%")
+            self.logger.info("=" * 40)
+        
         return StepResult(StepStatus.SUCCESS, f"Initialized pose for {successful}/{len(pose_reports)} frames",
-                         {"reports": pose_reports})
+                         {"reports": pose_reports, "summary_statistics": summary_stats})
     
     def _run_pose_init(self, binary: Path, model_dir: Path, mapping_path: Path,
                       intrinsics: Path, rgb: Path, depth: Path, landmarks: Path,
@@ -115,4 +150,54 @@ class PoseInitStep(PipelineStep):
         except subprocess.TimeoutExpired:
             self.logger.warning(f"Pose init timed out for {rgb.name}")
             return False
+    
+    def _collect_summary_statistics(self, pose_reports: List[Dict]) -> Dict:
+        """Collect summary statistics from JSON reports."""
+        stats = {
+            "mapping_quality": defaultdict(list),
+            "procrustes_analysis": defaultdict(list),
+        }
+        
+        for report in pose_reports:
+            if not report.get("success", False):
+                continue
+            
+            report_json_path = report.get("rigid_report")
+            if not report_json_path or not Path(report_json_path).exists():
+                continue
+            
+            try:
+                with open(report_json_path, 'r') as f:
+                    data = json.load(f)
+                
+                # Collect mapping quality metrics
+                if "mapping_quality" in data:
+                    mq = data["mapping_quality"]
+                    stats["mapping_quality"]["coverage"].append(mq.get("coverage_percent", 0))
+                    stats["mapping_quality"]["pre_rmse"].append(mq.get("pre_alignment_rmse_mm", 0))
+                
+                # Collect Procrustes analysis metrics
+                if "procrustes_analysis" in data:
+                    pa = data["procrustes_analysis"]
+                    stats["procrustes_analysis"]["post_icp_rmse"].append(pa.get("post_icp_rmse_mm", 0))
+                    stats["procrustes_analysis"]["improvement"].append(pa.get("improvement_percent", 0))
+            
+            except Exception as e:
+                self.logger.debug(f"Failed to load report {report_json_path}: {e}")
+                continue
+        
+        # Compute averages
+        summary = {}
+        for category, metrics in stats.items():
+            summary[category] = {}
+            for metric_name, values in metrics.items():
+                if values:
+                    if "coverage" in metric_name:
+                        summary[category][f"avg_{metric_name}"] = sum(values) / len(values)
+                    elif "rmse" in metric_name:
+                        summary[category][f"avg_{metric_name}"] = sum(values) / len(values)
+                    elif "improvement" in metric_name:
+                        summary[category][f"avg_{metric_name}"] = sum(values) / len(values)
+        
+        return summary
 

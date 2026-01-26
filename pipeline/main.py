@@ -49,11 +49,30 @@ except Exception as e:
     sys.exit(1)
 
 
-try:
-    from scipy.spatial import cKDTree
-    _HAS_CKDTREE = True
-except Exception:
-    _HAS_CKDTREE = False
+# Lazy import scipy to avoid hanging on macOS
+_HAS_CKDTREE = None
+
+def _check_scipy():
+    """Lazy check for scipy availability."""
+    global _HAS_CKDTREE
+    if _HAS_CKDTREE is not None:
+        return _HAS_CKDTREE
+    try:
+        import signal
+        def timeout_handler(signum, frame):
+            raise TimeoutError("scipy import timed out")
+        
+        # Set a timeout for scipy import (5 seconds)
+        signal.signal(signal.SIGALRM, timeout_handler)
+        signal.alarm(5)
+        try:
+            from scipy.spatial import cKDTree
+            _HAS_CKDTREE = True
+        finally:
+            signal.alarm(0)  # Cancel alarm
+    except (ImportError, TimeoutError, Exception):
+        _HAS_CKDTREE = False
+    return _HAS_CKDTREE
 
 # Pipeline steps are imported lazily in the run() method to avoid circular imports
 # Do not import here at module level
@@ -534,12 +553,16 @@ def compute_cloud_to_mesh_rmse(cloud: np.ndarray, mesh: np.ndarray, sample: int 
     Note: This function is kept for backward compatibility but is no longer used
     in the main pipeline. The C++ analysis binary handles RMSE computation.
     """
-    if cloud.shape[0] == 0 or mesh.shape[0] == 0 or not _HAS_CKDTREE:
+    if cloud.shape[0] == 0 or mesh.shape[0] == 0 or not _check_scipy():
         return float("nan")
     if cloud.shape[0] > sample:
         idx = np.random.choice(cloud.shape[0], sample, replace=False)
         cloud = cloud[idx]
-    tree = cKDTree(mesh)
+    try:
+        from scipy.spatial import cKDTree
+        tree = cKDTree(mesh)
+    except (ImportError, Exception):
+        return float("nan")
     dists, _ = tree.query(cloud, k=1)
     rmse = float(np.sqrt(np.mean(dists ** 2)))
     return rmse
@@ -944,9 +967,9 @@ Examples:
     parser.add_argument("--sequence", type=str, nargs="*", default=None,
                       help="(Ignored) All sequences are processed")
     parser.add_argument("--frames", type=int, default=5,
-                      help="Number of frames to process per sequence (default: 5)")
-    parser.add_argument("--max-frames", type=int, default=25,
-                      help="Max frames to convert per sequence (0 = all, default: 25)")
+                      help="Number of frames to process per sequence (default: 5, also limits conversion)")
+    parser.add_argument("--max-frames", type=int, default=None,
+                      help="Max frames to convert per sequence (0 = all, default: uses --frames value)")
     
     # Step toggles
     parser.add_argument("--download", action="store_true",
@@ -1048,11 +1071,14 @@ def main() -> int:
     logger.info(f"Output root: {args.output_root}")
     
     # Build configuration with sensible defaults
+    # If --max-frames not explicitly set, use --frames value
+    max_frames = args.max_frames if args.max_frames is not None else args.frames
+    
     config = {
         "data_root": args.data_root,
         "output_root": args.output_root,
         "analysis_root": args.output_root / "analysis",  # Always default
-        "max_frames": args.max_frames,
+        "max_frames": max_frames,
         "sequence": None,  # Ignored; all sequences are processed
         "kaggle_dataset": DEFAULT_KAGGLE_DATASET,
         "intrinsics": None,  # Use calibration file or defaults

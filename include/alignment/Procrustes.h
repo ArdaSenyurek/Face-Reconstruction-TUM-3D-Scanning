@@ -49,4 +49,29 @@ SimilarityTransform estimateSimilarityTransform(
     const std::vector<Eigen::Vector3d>& source_points,
     const std::vector<Eigen::Vector3d>& target_points);
 
+/**
+ * Validate correspondences for Procrustes alignment
+ * Checks for degenerate cases (collinear points, insufficient correspondences)
+ * 
+ * @param source_points Source 3D points
+ * @param target_points Target 3D points
+ * @return true if correspondences are valid, false otherwise
+ */
+bool validateCorrespondences(
+    const Eigen::MatrixXd& source_points,
+    const Eigen::MatrixXd& target_points);
+
+/**
+ * Compute detailed alignment errors after transformation
+ * 
+ * @param source_points Source points (before transform)
+ * @param target_points Target points
+ * @param transform Transform to apply
+ * @return Vector of per-correspondence errors (in meters)
+ */
+std::vector<double> computeAlignmentErrors(
+    const Eigen::MatrixXd& source_points,
+    const Eigen::MatrixXd& target_points,
+    const SimilarityTransform& transform);
+
 } // namespace face_reconstruction

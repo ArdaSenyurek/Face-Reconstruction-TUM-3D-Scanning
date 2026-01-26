@@ -8,6 +8,7 @@
 #include "alignment/Procrustes.h"
 #include <cmath>
 #include <algorithm>
+#include <limits>
 
 namespace face_reconstruction {
 
@@ -111,6 +112,61 @@ SimilarityTransform estimateSimilarityTransform(
     }
     
     return estimateSimilarityTransform(source_matrix, target_matrix);
+}
+
+bool validateCorrespondences(
+    const Eigen::MatrixXd& source_points,
+    const Eigen::MatrixXd& target_points) {
+    
+    if (source_points.rows() != target_points.rows() || 
+        source_points.cols() != 3 || target_points.cols() != 3) {
+        return false;
+    }
+    
+    int n = source_points.rows();
+    if (n < 3) {
+        return false;  // Need at least 3 points
+    }
+    
+    // Check for collinear points by computing covariance matrix
+    Eigen::Vector3d source_centroid = source_points.colwise().mean();
+    Eigen::MatrixXd source_centered = source_points.rowwise() - source_centroid.transpose();
+    
+    Eigen::Matrix3d cov = (source_centered.transpose() * source_centered) / static_cast<double>(n);
+    
+    // Check if points are collinear (rank of covariance should be >= 2)
+    Eigen::JacobiSVD<Eigen::Matrix3d> svd(cov);
+    int rank = 0;
+    double threshold = 1e-6;
+    for (int i = 0; i < 3; ++i) {
+        if (svd.singularValues()(i) > threshold) {
+            rank++;
+        }
+    }
+    
+    // Need at least rank 2 (points span a plane, not just a line)
+    return rank >= 2;
+}
+
+std::vector<double> computeAlignmentErrors(
+    const Eigen::MatrixXd& source_points,
+    const Eigen::MatrixXd& target_points,
+    const SimilarityTransform& transform) {
+    
+    std::vector<double> errors;
+    
+    if (source_points.rows() != target_points.rows()) {
+        return errors;
+    }
+    
+    Eigen::MatrixXd transformed = transform.apply(source_points);
+    
+    for (int i = 0; i < transformed.rows(); ++i) {
+        double err = (transformed.row(i) - target_points.row(i)).norm();
+        errors.push_back(err);
+    }
+    
+    return errors;
 }
 
 } // namespace face_reconstruction
