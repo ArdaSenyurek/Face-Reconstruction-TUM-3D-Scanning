@@ -28,7 +28,7 @@ class PoseInitStep(PipelineStep):
             return StepResult(StepStatus.FAILED, f"Pose init binary not found: {binary}")
         
         model_dir = Path(self.config.get("model_dir", "data/model_biwi"))
-        mapping_path = Path(self.config.get("landmark_mapping", "data/landmark_mapping.txt"))
+        mapping_path = Path(self.config.get("landmark_mapping", "data/bfm_landmark_68.txt"))
         conversion_reports = self.config.get("conversion_reports", [])
         landmarks_root = Path(self.config.get("landmarks_root", "outputs/landmarks"))
         pose_init_root = Path(self.config.get("pose_init_root", "outputs/pose_init"))

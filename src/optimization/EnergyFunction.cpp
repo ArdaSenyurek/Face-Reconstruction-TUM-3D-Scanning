@@ -44,6 +44,12 @@ Eigen::MatrixXd EnergyFunction::applyPose(const Eigen::MatrixXd& vertices,
     return transformed;
 }
 
+Eigen::MatrixXd EnergyFunction::getTransformedVertices(const OptimizationParams& params) const {
+    Eigen::MatrixXd vertices = reconstructMesh(params);
+    if (vertices.rows() == 0) return vertices;
+    return applyPose(vertices, params);
+}
+
 Eigen::Vector2d EnergyFunction::projectPoint(const Eigen::Vector3d& point) const {
     // Pinhole projection: u = fx * X/Z + cx, v = fy * Y/Z + cy
     if (point.z() <= 0.0) {

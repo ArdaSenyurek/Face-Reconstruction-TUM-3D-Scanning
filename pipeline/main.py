@@ -933,7 +933,7 @@ class PipelineOrchestrator:
 # ============================================================================
 
 # Default configuration
-DEFAULT_MODEL_DIR = Path("data/model_bfm")  # Week 4: Use BFM model
+DEFAULT_MODEL_DIR = Path("data/bfm/model_bfm")  # BFM model (data/bfm/model_bfm or data/model_bfm)
 DEFAULT_BFM_DIR = Path("data/bfm")
 DEFAULT_RECON_BIN = Path("build/bin/face_reconstruction")
 DEFAULT_KAGGLE_DATASET = "kmader/biwi-kinect-head-pose-database"
@@ -1051,6 +1051,10 @@ Examples:
     parser.add_argument("--save-depth-residual-vis", action="store_true", default=True,
                       help="Save per-frame depth residual visualizations (default: True)")
     
+    # Week 6: Run 3-stage evaluation protocol (identity → expression → tracking)
+    parser.add_argument("--week6-eval", action="store_true",
+                      help="Run Week 6 evaluation script (3-stage protocol); outputs/week6/")
+    
     return parser
 
 
@@ -1124,7 +1128,22 @@ def main() -> int:
         "drift_rmse_thresh": args.drift_rmse_thresh,
         "save_overlays_3d": args.save_overlays_3d,
         "save_depth_residual_vis": args.save_depth_residual_vis,
+        "week6_eval": getattr(args, "week6_eval", False),
     }
+    
+    # Week 6: Run evaluation script and exit (no full pipeline)
+    if config.get("week6_eval"):
+        import subprocess
+        script = Path(__file__).parent.parent / "scripts" / "run_week6_eval.py"
+        if not script.exists():
+            logger.error(f"Week 6 script not found: {script}")
+            return 1
+        cmd = [sys.executable, str(script), "--output-root", str(args.output_root)]
+        if args.sequence and len(args.sequence) > 0:
+            cmd += ["--sequences"] + args.sequence
+        logger.info("Running Week 6 evaluation: " + " ".join(cmd))
+        ret = subprocess.run(cmd, cwd=str(Path(__file__).parent.parent))
+        return ret.returncode
     
     # Run pipeline
     try:

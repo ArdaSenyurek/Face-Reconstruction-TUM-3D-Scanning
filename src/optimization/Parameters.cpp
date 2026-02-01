@@ -7,6 +7,7 @@
 
 #include "optimization/Parameters.h"
 #include <cmath>
+#include <iostream>
 
 namespace face_reconstruction {
 
@@ -85,6 +86,22 @@ void OptimizationParams::applyUpdate(const Eigen::VectorXd& delta_params) {
     if (optimize_translation) {
         t += delta_params.segment(idx, 3);
         idx += 3;
+    }
+    
+    // Week 6: Clamp alpha and delta to max norm (guardrails for stability)
+    if (max_alpha_norm > 0 && alpha.size() > 0) {
+        double n = alpha.norm();
+        if (n > max_alpha_norm) {
+            alpha *= (max_alpha_norm / n);
+            std::cerr << "[Parameters] alpha clamped to norm " << max_alpha_norm << " (was " << n << ")" << std::endl;
+        }
+    }
+    if (max_delta_norm > 0 && delta.size() > 0) {
+        double n = delta.norm();
+        if (n > max_delta_norm) {
+            delta *= (max_delta_norm / n);
+            std::cerr << "[Parameters] delta clamped to norm " << max_delta_norm << " (was " << n << ")" << std::endl;
+        }
     }
 }
 

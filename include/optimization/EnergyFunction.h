@@ -102,6 +102,11 @@ public:
         const LandmarkData& landmarks,
         const LandmarkMapping& mapping,
         const cv::Mat& observed_depth) const;
+    
+    /**
+     * Week 6: Get mesh vertices in camera space (for early-stop Z range check).
+     */
+    Eigen::MatrixXd getTransformedVertices(const OptimizationParams& params) const;
 
 private:
     const MorphableModel* model_ = nullptr;

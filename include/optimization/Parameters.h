@@ -37,6 +37,10 @@ struct OptimizationParams {
     double convergence_threshold = 1e-6;
     double step_size = 1.0;      // Gauss-Newton step size (can reduce for stability)
     
+    // Week 6: Coefficient clamps (0 = no clamp). Log when exceeded.
+    double max_alpha_norm = 0.0;   // Max L2 norm for identity (0 = disabled)
+    double max_delta_norm = 3.0;   // Max L2 norm for expression (0 = disabled; 3.0 = safe default)
+    
     // Which parameters to optimize (useful for multi-frame tracking)
     // Default: pose-only for speed (identity/expression disabled)
     bool optimize_identity = true;    // Enabled for performance
@@ -108,11 +112,14 @@ struct OptimizationResult {
     int iterations;
     bool converged;
     std::vector<double> energy_history;
+    std::vector<double> step_norms;  // Week 6: per-iteration step norm for convergence.json
     
     // Per-term energies for diagnostics
     double landmark_energy;
     double depth_energy;
     double regularization_energy;
+    double final_step_norm = 0.0;  // Week 6: last applied step norm
+    double damping_used = 1e-4;    // Week 6: damping value used (for convergence.json)
 };
 
 } // namespace face_reconstruction

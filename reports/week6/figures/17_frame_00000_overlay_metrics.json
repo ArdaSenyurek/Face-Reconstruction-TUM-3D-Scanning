@@ -1,0 +1,14 @@
+{
+  "rigid": {
+    "scale_ratio": 0.179513,
+    "axis_dot_product": 0.751689,
+    "bbox_overlap_x": 0.103892,
+    "bbox_overlap_y": 0.268037,
+    "bbox_overlap_z": 0.388121,
+    "cloud_z_range": [0.977000, 1.298000],
+    "mesh_z_range": [1.072417, 1.197004],
+    "num_scan_points": 31195,
+    "num_mesh_vertices": 58203,
+    "nn_rmse_m": 0.186331
+  }
+}

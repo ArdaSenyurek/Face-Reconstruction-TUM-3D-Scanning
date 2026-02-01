@@ -104,6 +104,10 @@ OptimizationResult GaussNewtonOptimizer::optimize(
     }
     
     double prev_energy = result.initial_energy;
+    double prev_depth_energy = energy_func_.computeDepthEnergy(params, observed_depth);
+    int depth_not_improving_count = 0;
+    const double z_min_m = 0.5;
+    const double z_max_m = 1.5;
     
     for (int iter = 0; iter < params.max_iterations; ++iter) {
         result.iterations = iter + 1;
@@ -168,11 +172,43 @@ OptimizationResult GaussNewtonOptimizer::optimize(
         // Update parameters
         params = best_params;
         result.energy_history.push_back(best_energy);
+        result.step_norms.push_back((delta * step).norm());
         
         // Compute per-term energies for logging
         double lm_energy = energy_func_.computeLandmarkEnergy(params, landmarks, mapping);
         double depth_energy = energy_func_.computeDepthEnergy(params, observed_depth);
         double reg_energy = energy_func_.computeRegularization(params);
+        
+        // Week 6: Early stop if depth term not improving (2 consecutive increases)
+        if (depth_energy > prev_depth_energy) {
+            depth_not_improving_count++;
+            if (depth_not_improving_count >= 2) {
+                if (verbose_) {
+                    std::cout << "Early stop: depth term not improving at iteration " << iter + 1 << std::endl;
+                }
+                result.converged = true;
+                break;
+            }
+        } else {
+            depth_not_improving_count = 0;
+        }
+        prev_depth_energy = depth_energy;
+        
+        // Week 6: Early stop if mesh Z out of range [0.5, 1.5] m
+        Eigen::MatrixXd verts = energy_func_.getTransformedVertices(params);
+        if (verts.rows() > 0) {
+            double z_min = verts.col(2).minCoeff();
+            double z_max = verts.col(2).maxCoeff();
+            if (z_min < z_min_m || z_max > z_max_m) {
+                if (verbose_) {
+                    std::cout << "Early stop: mesh Z range [" << z_min << ", " << z_max
+                              << "] outside [" << z_min_m << ", " << z_max_m << "] m at iteration "
+                              << iter + 1 << std::endl;
+                }
+                result.converged = true;
+                break;
+            }
+        }
         
         if (verbose_ || iter < 10 || iter % 5 == 0) {
             std::cout << "Iter " << std::setw(3) << iter + 1 << ": "
@@ -207,6 +243,10 @@ OptimizationResult GaussNewtonOptimizer::optimize(
         params, landmarks, mapping);
     result.depth_energy = energy_func_.computeDepthEnergy(params, observed_depth);
     result.regularization_energy = energy_func_.computeRegularization(params);
+    result.damping_used = damping_;
+    if (!result.step_norms.empty()) {
+        result.final_step_norm = result.step_norms.back();
+    }
     
     if (verbose_) {
         std::cout << "=== Optimization Complete ===" << std::endl;

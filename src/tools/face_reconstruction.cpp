@@ -90,14 +90,15 @@ Eigen::MatrixXd applyPoseToVertices(const Eigen::MatrixXd& vertices,
 }
 
 /**
- * Week 5: Simple JSON parsing for tracking state
- * Parses a minimal JSON format for pose and expression coefficients
+ * Week 5/6: Simple JSON parsing for tracking state
+ * Parses a minimal JSON format for pose, identity (alpha), and expression (delta) coefficients
  */
 bool loadTrackingStateJSON(const std::string& filepath,
                            Eigen::Matrix3d& R,
                            Eigen::Vector3d& t,
                            double& scale,
-                           Eigen::VectorXd& expression) {
+                           Eigen::VectorXd& expression,
+                           Eigen::VectorXd* identity_out = nullptr) {
     std::ifstream file(filepath);
     if (!file.is_open()) {
         std::cerr << "Failed to open tracking state file: " << filepath << std::endl;
@@ -194,18 +195,31 @@ bool loadTrackingStateJSON(const std::string& filepath,
         }
     }
     
+    // Week 6: Parse identity coefficients (alpha) for Stage 2
+    if (identity_out) {
+        std::string id_str = findValue("identity");
+        if (!id_str.empty()) {
+            auto id_arr = parseDoubleArray(id_str);
+            identity_out->resize(id_arr.size());
+            for (size_t i = 0; i < id_arr.size(); ++i) {
+                (*identity_out)(i) = id_arr[i];
+            }
+        }
+    }
+    
     return true;
 }
 
 /**
- * Week 5: Save tracking state to JSON
+ * Week 5/6: Save tracking state to JSON (with optional identity/alpha for Stage 1 handoff)
  */
 bool saveTrackingStateJSON(const std::string& filepath,
                            const Eigen::Matrix3d& R,
                            const Eigen::Vector3d& t,
                            double scale,
                            const Eigen::VectorXd& expression,
-                           double last_rmse_mm = 0.0) {
+                           double last_rmse_mm = 0.0,
+                           const Eigen::VectorXd* identity = nullptr) {
     std::ofstream file(filepath);
     if (!file.is_open()) {
         std::cerr << "Failed to open file for writing: " << filepath << std::endl;
@@ -238,8 +252,15 @@ bool saveTrackingStateJSON(const std::string& filepath,
     }
     file << "],\n";
     
-    // Identity (empty for now)
-    file << "  \"identity\": [],\n";
+    // Week 6: Identity (alpha) for Stage 1 -> Stage 2 handoff
+    file << "  \"identity\": [";
+    if (identity && identity->size() > 0) {
+        for (int i = 0; i < identity->size(); ++i) {
+            if (i > 0) file << ", ";
+            file << (*identity)(i);
+        }
+    }
+    file << "],\n";
     
     // Metadata
     file << "  \"frame_idx\": 0,\n";
@@ -269,12 +290,19 @@ void printUsage(const char* program_name) {
               << "  --lambda-landmark <w>     Landmark weight (default: 1.0)\n"
               << "  --lambda-depth <w>        Depth weight (default: 0.1)\n"
               << "  --lambda-reg <w>          Regularization weight (default: 1.0)\n"
+              << "  --lambda-alpha <w>        Identity regularization (Week 6, overrides lambda-reg)\n"
+              << "  --lambda-delta <w>        Expression regularization (Week 6, overrides lambda-reg)\n"
               << "  --verbose                 Print detailed optimization output\n"
               << "  --help                    Show this help message\n"
               << "\n"
               << "Week 5 Tracking Options:\n"
               << "  --init-pose-json <path>   Load initial pose/expression from JSON\n"
               << "  --output-state-json <path> Save final pose/expression to JSON\n"
+              << "\n"
+              << "Week 6 Evaluation Protocol (3-stage):\n"
+              << "  --stage <id|expr|full>    id=identity only, expr=expression only, full=tracking (default: full)\n"
+              << "  --init-identity-json <path> Load identity (alpha) and pose from Stage 1 (for Stage 2)\n"
+              << "  --output-convergence-json <path> Save energy_history, step_norms, iterations\n"
               << "\n"
               << "Example:\n"
               << "  " << program_name << " --rgb data/rgb.png --depth data/depth.png \\\n"
@@ -287,6 +315,8 @@ int main(int argc, char* argv[]) {
     std::string rgb_path, depth_path, intrinsics_path, model_dir;
     std::string landmarks_path, mapping_path, output_mesh, output_pointcloud;
     std::string init_pose_json, output_state_json;  // Week 5: Tracking support
+    std::string init_identity_json, output_convergence_json;  // Week 6: Stage 2 + convergence
+    std::string stage_mode = "full";  // Week 6: "id" | "expr" | "full" (default full = backward compat)
     double depth_scale = 1000.0;
     bool optimize = false;
     bool verbose = false;
@@ -294,6 +324,8 @@ int main(int argc, char* argv[]) {
     double lambda_landmark = 1.0;
     double lambda_depth = 0.1;
     double lambda_reg = 1.0;
+    double lambda_alpha_sep = 0.0;  // Week 6: if > 0 use for identity; else lambda_reg
+    double lambda_delta_sep = 0.0;  // Week 6: if > 0 use for expression; else lambda_reg
     
     // Parse command line arguments
     for (int i = 1; i < argc; ++i) {
@@ -323,6 +355,12 @@ int main(int argc, char* argv[]) {
             init_pose_json = argv[++i];  // Week 5
         } else if (arg == "--output-state-json" && i + 1 < argc) {
             output_state_json = argv[++i];  // Week 5
+        } else if (arg == "--stage" && i + 1 < argc) {
+            stage_mode = argv[++i];  // Week 6: id | expr | full
+        } else if (arg == "--init-identity-json" && i + 1 < argc) {
+            init_identity_json = argv[++i];  // Week 6: Stage 2
+        } else if (arg == "--output-convergence-json" && i + 1 < argc) {
+            output_convergence_json = argv[++i];  // Week 6
         } else if (arg == "--optimize") {
             optimize = true;
         } else if (arg == "--no-optimize") {
@@ -337,10 +375,12 @@ int main(int argc, char* argv[]) {
             lambda_depth = std::stod(argv[++i]);
         } else if (arg == "--lambda-reg" && i + 1 < argc) {
             lambda_reg = std::stod(argv[++i]);
+        } else if (arg == "--lambda-alpha" && i + 1 < argc) {
+            lambda_alpha_sep = std::stod(argv[++i]);
+        } else if (arg == "--lambda-delta" && i + 1 < argc) {
+            lambda_delta_sep = std::stod(argv[++i]);
         }
     }
-    
-    std::cout << "=== 3D Face Reconstruction ===" << std::endl;
     std::cout << "Mode: " << (optimize ? "Optimized" : "Mean Shape Only") << std::endl;
     std::cout << std::endl;
     
@@ -461,15 +501,29 @@ int main(int argc, char* argv[]) {
     params.max_iterations = max_iterations;
     params.lambda_landmark = lambda_landmark;
     params.lambda_depth = lambda_depth;
-    params.lambda_alpha = lambda_reg;
-    params.lambda_delta = lambda_reg;
+    params.lambda_alpha = (lambda_alpha_sep > 0) ? lambda_alpha_sep : lambda_reg;
+    params.lambda_delta = (lambda_delta_sep > 0) ? lambda_delta_sep : lambda_reg;
     
-    // Week 4: Enable shape coefficient optimization when --optimize is passed
-    // Pose fixed from Procrustes, only expression coefficients optimized
-    params.optimize_expression = optimize;  // Enable expression coefficients
-    params.optimize_identity = false;       // Keep identity fixed for stability
-    params.optimize_rotation = false;       // Pose fixed
-    params.optimize_translation = false;    // Pose fixed
+    // Week 6: Set which parameters to optimize from --stage (id | expr | full)
+    // id = identity only (delta=0, pose fixed); expr = expression only (alpha fixed); full = tracking (expression + pose warm-start)
+    if (optimize && stage_mode == "id") {
+        params.optimize_identity = true;
+        params.optimize_expression = false;
+        params.optimize_rotation = false;
+        params.optimize_translation = false;
+        params.delta.setZero();
+    } else if (optimize && stage_mode == "expr") {
+        params.optimize_identity = false;
+        params.optimize_expression = true;
+        params.optimize_rotation = false;
+        params.optimize_translation = false;
+    } else {
+        // Week 4/5: full or legacy — expression only, pose fixed (or warm-start from init_pose_json)
+        params.optimize_expression = optimize;
+        params.optimize_identity = false;
+        params.optimize_rotation = false;
+        params.optimize_translation = false;
+    }
     
     // Scale factor from Procrustes (BFM mm -> camera meters)
     double pose_scale = 1.0;
@@ -484,20 +538,30 @@ int main(int argc, char* argv[]) {
         
         bool loaded_from_json = false;
         
-        // Week 5: Try to load initial pose from JSON (tracking warm-start)
-        if (!init_pose_json.empty()) {
-            std::cout << "    Loading initial state from: " << init_pose_json << std::endl;
+        // Week 6: Stage 2 or Stage 3 — load identity (alpha) from Stage 1 when init_identity_json is set
+        if (!init_identity_json.empty()) {
+            std::cout << "    Loading identity from Stage 1: " << init_identity_json << std::endl;
             Eigen::VectorXd init_expression;
-            if (loadTrackingStateJSON(init_pose_json, params.R, params.t, params.scale, init_expression)) {
+            if (loadTrackingStateJSON(init_identity_json, params.R, params.t, params.scale, init_expression, &params.alpha)) {
                 pose_scale = params.scale;
-                // Note: We only warm-start the pose (R, t, scale), not expression coefficients
-                // because the optimized expressions can be unstable and cause divergence.
-                // Expression starts from zero each frame for more stable results.
                 loaded_from_json = true;
-                std::cout << "    Loaded pose: scale=" << pose_scale 
-                          << ", t=[" << params.t.transpose() << "]" << std::endl;
-            } else {
-                std::cout << "    Warning: Failed to load tracking state, using Procrustes" << std::endl;
+                std::cout << "    Loaded identity (alpha size=" << params.alpha.size() << ")" << std::endl;
+            }
+        }
+        // Week 6 Stage 3: If both init_identity_json and init_pose_json set, overwrite pose with previous frame (keep identity from above)
+        if (!init_pose_json.empty()) {
+            std::cout << "    Loading pose (and optionally expression) from: " << init_pose_json << std::endl;
+            Eigen::VectorXd prev_expression;
+            Eigen::Matrix3d R_pose;
+            Eigen::Vector3d t_pose;
+            double scale_pose;
+            if (loadTrackingStateJSON(init_pose_json, R_pose, t_pose, scale_pose, prev_expression, nullptr)) {
+                params.R = R_pose;
+                params.t = t_pose;
+                params.scale = scale_pose;
+                pose_scale = scale_pose;
+                loaded_from_json = true;
+                std::cout << "    Loaded pose: scale=" << pose_scale << ", t=[" << params.t.transpose() << "]" << std::endl;
             }
         }
         
@@ -581,19 +645,46 @@ int main(int argc, char* argv[]) {
             final_vertices, result.final_params.R, result.final_params.t, 
             result.final_params.scale);
         
-        // Week 5: Save final state to JSON for tracking
+        // Week 5/6: Save final state to JSON for tracking (Stage 1 "id" saves identity for Stage 2)
         if (!output_state_json.empty()) {
             std::cout << "    Saving final state to: " << output_state_json << std::endl;
-            // Note: We use final energy as a proxy metric - actual 3D RMSE
-            // should be computed in Python from mesh vs scan point cloud
             double final_energy = result.final_energy;
-            if (saveTrackingStateJSON(output_state_json, 
-                                      result.final_params.R, 
+            const Eigen::VectorXd* identity_to_save = (stage_mode == "id" && result.final_params.alpha.size() > 0)
+                ? &result.final_params.alpha : nullptr;
+            if (saveTrackingStateJSON(output_state_json,
+                                      result.final_params.R,
                                       result.final_params.t,
                                       result.final_params.scale,
                                       result.final_params.delta,
-                                      final_energy)) {
+                                      final_energy,
+                                      identity_to_save)) {
                 std::cout << "    State saved successfully" << std::endl;
+            }
+        }
+        // Week 6: Save convergence data for evaluation (energy_history, step_norms, iterations, damping)
+        if (!output_convergence_json.empty()) {
+            std::ofstream conv_file(output_convergence_json);
+            if (conv_file.is_open()) {
+                conv_file << std::fixed << std::setprecision(8);
+                conv_file << "{\n  \"iterations\": " << result.iterations
+                          << ",\n  \"converged\": " << (result.converged ? "true" : "false")
+                          << ",\n  \"initial_energy\": " << result.initial_energy
+                          << ",\n  \"final_energy\": " << result.final_energy
+                          << ",\n  \"final_step_norm\": " << result.final_step_norm
+                          << ",\n  \"damping_used\": " << result.damping_used
+                          << ",\n  \"energy_history\": [";
+                for (size_t k = 0; k < result.energy_history.size(); ++k) {
+                    if (k > 0) conv_file << ", ";
+                    conv_file << result.energy_history[k];
+                }
+                conv_file << "],\n  \"step_norms\": [";
+                for (size_t k = 0; k < result.step_norms.size(); ++k) {
+                    if (k > 0) conv_file << ", ";
+                    conv_file << result.step_norms[k];
+                }
+                conv_file << "]\n}\n";
+                conv_file.close();
+                std::cout << "    Convergence data saved to: " << output_convergence_json << std::endl;
             }
         }
         
