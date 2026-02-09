@@ -51,7 +51,7 @@ class AnalysisStep(PipelineStep):
             try:
                 seq_dir = Path(conv_lookup[seq_name]["output_dir"])
                 intrinsics_path = seq_dir / "intrinsics.txt"
-                depth_frame = seq_dir / "depth" / frame_name
+                depth_frame = seq_dir / "depth" / f"{frame_stem}.png"
                 mesh_path = Path(recon_report["mesh"])
                 
                 entry = {}
@@ -90,10 +90,12 @@ class AnalysisStep(PipelineStep):
                 
                 # Runtime measurement (reruns reconstruction)
                 if measure_runtime:
+                    rgb_path = seq_dir / "rgb" / f"{frame_stem}.png"
+                    depth_path = seq_dir / "depth" / f"{frame_stem}.png"
                     runtime = self._measure_runtime(
                         Path(self.config.get("recon_binary", "build/bin/face_reconstruction")),
-                        seq_dir / "rgb" / frame_name,
-                        depth_frame,
+                        rgb_path,
+                        depth_path,
                         intrinsics_path,
                         Path(self.config.get("model_dir", "data/model_biwi")),
                         self.config.get("timeout", 60)
