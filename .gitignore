@@ -21,6 +21,8 @@ venv/
 data/
 data/biwi_download/
 outputs/
+reports/
+*.pdf
 
 # Python
 __pycache__/
