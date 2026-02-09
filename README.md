@@ -248,8 +248,8 @@ Executables appear in `build/bin/`.
    cmake --build .
    ```
    Executables will be in `build/bin/` (e.g. `face_reconstruction`, `pose_init`, `create_overlays`, `analysis`).
-4.Obtain Biwi data: run with `--download` (requires Kaggle credentials) or place data under `data/` as expected by the pipeline.
-5.**BFM face model:** download the BFM (see **Large assets** below), then place the file (`.mat` or `.h5`) in `data/bfm/`. The pipeline will convert it to the project format (model setup step) or you can run `pipeline/utils/convert_bfm_to_project.py` manually.
+4. Obtain Biwi data: run with `--download` (requires Kaggle credentials) or place data under `data/` as expected by the pipeline.
+5. **BFM face model:** download the BFM (see **Large assets** below), then place the file (`.mat` or `.h5`) in `data/bfm/`. The pipeline will convert it to the project format (model setup step) or you can run `pipeline/utils/convert_bfm_to_project.py` manually.
 
 ---
 
