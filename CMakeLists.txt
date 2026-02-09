@@ -16,6 +16,21 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 
+# Ensure object-file directories exist before build (avoids "rename failed: No such file or directory"
+# when the compiler writes .tmp and renames to .o, especially with parallel builds or fresh config)
+set(_obj_subdirs src/data src/camera src/utils src/model src/landmarks src/alignment src/rendering src/optimization src/tools tests)
+set(_targets_with_shared_sources face_reconstruction pose_init create_overlays test_depth_lifting test_landmarks_io test_pose_init test_landmark_mapping test_depth_renderer test_depth_residuals test_icp_validation)
+foreach(_t ${_targets_with_shared_sources})
+  foreach(_d ${_obj_subdirs})
+    file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/CMakeFiles/${_t}.dir/${_d}")
+  endforeach()
+endforeach()
+foreach(_t validate_mapping analysis)
+  foreach(_d src/tools src/model src/alignment src/data src/camera src/utils)
+    file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/CMakeFiles/${_t}.dir/${_d}")
+  endforeach()
+endforeach()
+
 # Include directories
 include_directories(${CMAKE_SOURCE_DIR}/include)
 
