@@ -18,8 +18,8 @@ This README lists all **entrypoint files** (main pipeline, C++ tools, scripts, u
 
 - **Design goals:** Single entrypoint (`pipeline/main.py`), config-driven run, optional steps (download, convert, model setup, pose init, reconstruct, analysis), and clear data flow aligned with the course project (depth-based parametric reconstruction, identity + expression, evaluation).
 - **Why Python + C++:** Python handles orchestration, I/O, dataset discovery, and CLI; C++ handles numeric-heavy work (Procrustes, morphable model, Gauss-Newton, depth rendering, RMSE). Pipeline steps call C++ binaries via `subprocess` with paths and flags.
-- **Modular steps:** Each step is a class (e.g. `DownloadStep`, `ConversionStep`, `PoseInitStep`, `ReconstructionStep`, `TrackingStep`) with `name`, `description`, and `execute()`. The orchestrator runs them in a fixed order with shared `config` and `state`; steps can be skipped via CLI (e.g. `--skip-convert`) or when prerequisites are missing.
-- **Data flow:** Raw data → `converted/` (RGB, depth, intrinsics) → `landmarks/` (dlib) → **Pose Init (Procrustes + ICP)** → `pose_init/` → `meshes/` (C++ `face_reconstruction`) or tracking outputs; overlay and analysis steps consume these. Conversion reports drive all downstream steps.
+- **Modular steps:** Each step is a class (e.g. `DownloadStep`, `ConversionStep`, `PoseInitStep`, `ReconstructionStep`) with `name`, `description`, and `execute()`. The orchestrator runs them in a fixed order with shared `config` and `state`; steps can be skipped via CLI (e.g. `--skip-convert`) or when prerequisites are missing.
+- **Data flow:** Raw data → `converted/` (RGB, depth, intrinsics) → `landmarks/` (dlib) → **Pose Init (Procrustes + ICP)** → `pose_init/` → `meshes/` (C++ `face_reconstruction`); overlay and analysis steps consume these. Conversion reports drive all downstream steps.
 - **Why this structure:** Enables partial runs, restart from a step, and reuse of the same C++ tools from scripts (e.g. evaluation) with consistent paths and options.
 
 ---
@@ -31,9 +31,8 @@ The proposal (Section 3) mentions RGB-D from Azure Kinect or RealSense; this imp
 | Proposal section | Implementation |
 |------------------|----------------|
 | **Technical approach (Section 2):** Parametric model M(α,δ), camera/depth rendering, energy E_sparse + E_depth + E_reg, optimization (Procrustes → Gauss-Newton) | C++ `include/` + `src/`: `MorphableModel`, `DepthRenderer`, `EnergyFunction`, `GaussNewton`, `Procrustes`, `LandmarkMapping`; exposed via `pose_init` and `face_reconstruction` binaries. |
-| **Outputs (Section 2.5):** Identity mesh, per-frame expression/pose, depth renderings and overlays, quantitative error plots | Pipeline outputs under `meshes/`, `pose_init/`, tracking state JSON; `create_overlays`; `analysis` binary; `scripts/compute_metrics.py`, `aggregate_summary.py`. |
+| **Outputs (Section 2.5):** Identity mesh, per-frame expression/pose, depth renderings and overlays, quantitative error plots | Pipeline outputs under `meshes/`, `pose_init/`; `create_overlays`; `analysis` binary; `scripts/compute_metrics.py`. |
 | **Evaluation (Section 4):** Depth error, landmark reprojection error, energy convergence, runtime | C++ `analysis` (RMSE, depth stats); `compute_metrics.py` (landmark/depth/surface metrics); pipeline runtime logging; qualitative overlays via `create_overlays` and `generate_visuals.py`. |
-| **Milestones (Section 5):** Week 2–6 (model, landmarks, pose init, renderer, optimization, tracking, evaluation) | `ModelSetupStep`, `LandmarkDetectionStep`, `MappingSetupStep`, `PoseInitStep` + C++ `pose_init`; `DepthRenderer`, `EnergyFunction`; `face_reconstruction` with `--optimize`, `ReconstructionStep`, `Week4OverlayStep` (in `pipeline/steps/overlays.py`); `TrackingStep`; `run_eval.py`, `compute_metrics.py`, `aggregate_summary.py`, `generate_visuals.py`. |
 
 ---
 
@@ -88,43 +87,18 @@ flowchart TD
   MappingSetup --> PoseInit["Rigid alignment (Pose Init): Procrustes + ICP"]
   PoseInit --> Overlays{make_overlays?}
   Overlays -->|Yes| Week4Overlay[Overlays C++]
-  Overlays -->|No| ReconstructBranch{track?}
-  Week4Overlay --> ReconstructBranch
-  ReconstructBranch -->|Yes| Tracking["Tracking: frame0 Procrustes+ICP, then warm-start + Gauss-Newton per frame"]
-  ReconstructBranch -->|No| Reconstruction["Reconstruction C++: Procrustes init + Gauss-Newton (E_sparse + E_depth + E_reg)"]
-  Tracking --> Analysis[Analysis C++]
-  Reconstruction --> Analysis
+  Overlays -->|No| Reconstruction[Reconstruction C++]
+  Week4Overlay --> Reconstruction
+  Reconstruction --> Analysis[Analysis C++]
   Analysis --> End([End])
 ```
 
 - **Rigid alignment (Pose Init):** Explicit step; C++ `pose_init` runs **Procrustes** (similarity transform from landmark correspondences) then **ICP** refinement; outputs rigid-aligned mesh (PLY) and report JSON. The proposal listed PnP or Procrustes; we use Procrustes + ICP only.
 - **Reconstruction:** Single-frame; C++ `face_reconstruction` with optional **Gauss-Newton** (see optimization cycle below).
-- **Tracking:** Frame 0 uses rigid alignment; frames 1..N use warm-start from previous frame’s state + Gauss-Newton; optional temporal smoothing (EMA/SLERP). If the head direction jumps between frames, use `--temporal-smoothing` and/or `--lambda-rotation-prior` (default 1.0) to reduce rotation jitter.
-
-### Tracking flow (Frame 0 vs Frame 1..N)
-
-```mermaid
-flowchart LR
-  subgraph frame0 [Frame 0]
-    P0[Pose Init: Procrustes + ICP]
-    S0[State R,t,scale]
-    R0[face_reconstruction optional GN]
-    F0[Final state JSON]
-    P0 --> S0 --> R0 --> F0
-  end
-  subgraph frameN [Frame 1..N]
-    L[Load previous state]
-    R[face_reconstruction with init-pose-json + Gauss-Newton]
-    F[Final state JSON]
-    T[Optional EMA/SLERP smoothing]
-    L --> R --> F --> T
-  end
-  F0 -.-> L
-```
 
 ### Gauss-Newton optimization (short)
 
-When `--optimize` is used, Reconstruction (and Tracking) run a **Gauss-Newton** loop: compute residuals r (landmark + depth + reg) → compute Jacobian J → solve (J^T J + damping)·δ = −J^T r → line search → update parameters → convergence check. Energy: **E = E_sparse + E_depth + E_reg**.
+When `--optimize` is used, Reconstruction runs a **Gauss-Newton** loop: compute residuals r (landmark + depth + reg) → compute Jacobian J → solve (J^T J + damping)·δ = −J^T r → line search → update parameters → convergence check. Energy: **E = E_sparse + E_depth + E_reg**.
 
 ### Full Gauss-Newton optimization cycle (appendix)
 
@@ -166,7 +140,7 @@ flowchart TD
 
 | Entrypoint | Purpose | Main options |
 |------------|---------|--------------|
-| **pipeline/main.py** | End-to-end Biwi pipeline: download (optional), convert RGB-D, landmarks, BFM model setup, **Pose Init (Procrustes + ICP)**, reconstruction or tracking, optional overlays and Week 6 eval. | `--data-root`, `--output-root`, `--frames`, `--download`, `--skip-convert`, `--skip-pose-init`, `--skip-reconstruct`, `--no-analysis`, `--optimize`, `--track`, `--make-overlays`, `--week6-eval`, `--recon-binary`, `--pose-init-binary`, `--model-dir`, `--landmark-mapping` |
+| **pipeline/main.py** | End-to-end Biwi pipeline: download (optional), convert RGB-D, landmarks, BFM model setup, **Pose Init (Procrustes + ICP)**, reconstruction, optional overlays. | `--data-root`, `--output-root`, `--frames`, `--download`, `--skip-convert`, `--skip-pose-init`, `--skip-reconstruct`, `--no-analysis`, `--optimize`, `--make-overlays`, `--recon-binary`, `--pose-init-binary`, `--model-dir`, `--landmark-mapping` |
 
 **Launch (from repo root):**
 ```bash
@@ -176,10 +150,10 @@ python pipeline/main.py [options]
 **Example:**
 ```bash
 python pipeline/main.py --download --frames 5
-python pipeline/main.py --no-analysis --optimize --track
+python pipeline/main.py --no-analysis --optimize
 ```
 
-**Outputs:** Under `output_root`: `converted/`, `landmarks/`, `pose_init/`, `meshes/`, `analysis/`, `logs/`. With `--week6-eval`: `outputs/week6/`.
+**Outputs:** Under `output_root`: `converted/`, `landmarks/`, `pose_init/`, `meshes/`, `analysis/`, `logs/`.
 
 ---
 
@@ -189,7 +163,7 @@ Built with CMake; called by the pipeline or scripts.
 
 | Binary | Purpose | Main inputs | Outputs |
 |--------|---------|-------------|---------|
-| **face_reconstruction** | 3D mesh from RGB-D using PCA model + optional **Gauss-Newton** (E_sparse + E_depth + E_reg); supports tracking (init/state JSON). | `--rgb`, `--depth`, `--intrinsics`, `--model-dir`, `--landmarks`, `--mapping`, `--output-mesh`; `--optimize`, `--init-pose-json`, `--output-state-json` | PLY mesh; optional state JSON |
+| **face_reconstruction** | 3D mesh from RGB-D using PCA model + optional **Gauss-Newton** (E_sparse + E_depth + E_reg). | `--rgb`, `--depth`, `--intrinsics`, `--model-dir`, `--landmarks`, `--mapping`, `--output-mesh`; `--optimize` | PLY mesh |
 | **pose_init** | **Rigid alignment:** **Procrustes** + **ICP** from landmarks and depth. | `--rgb`, `--depth`, `--intrinsics`, `--landmarks`, `--model-dir`, `--mapping`, `--output`, `--report` | Aligned mesh (PLY); optional report JSON |
 | **create_overlays** | Mesh-vs-scan overlays (rigid and optional optimized). | `--mesh-rigid`, `--depth`, `--intrinsics`, `--out-dir`; optional `--mesh-opt`, `--rgb`, `--output-metrics` | 3D overlay PLY, 2D PNG, depth comparison, metrics JSON |
 | **validate_mapping** | Check landmark-to-model mapping against PCA model. | `--mapping`, `--model-dir`, optional `--min-count` | Exit code + console |
@@ -201,13 +175,10 @@ Built with CMake; called by the pipeline or scripts.
 
 | Script | Purpose | Main options | Outputs |
 |--------|---------|--------------|---------|
-| **run_eval.py** | Three-stage evaluation: identity → expression → tracking. | `--data-root`, `--output-root`, `--sequences`, `--frames`, `--stage`, `--recon-binary`, `--pose-init-binary`, etc. | `outputs/week6/<seq>/<frame>/meshes/` (identity.ply, expression.ply, tracked.ply), metrics, visuals |
-| **export_overlay_ply.py** | Export 3D overlay PLY for one seq/frame (rigid or opt). | `--seq`, `--stage` (rigid \| opt), `--frame`, `--output-root`, `--report` | Overlay PLY under week6 or reports/week6/figures |
 | **generate_visuals.py** | 2D overlay (RGB + mesh) and depth comparison images. | `--seq`, `--frame`, `--mesh`, `--depth`, `--intrinsics`, `--output-dir` | overlay_rgb.png, depth_obs/rend/residual PNGs |
 | **compute_metrics.py** | Per-frame metrics: 2D landmark, depth, 3D surface error. | `--mesh`, `--depth`, `--intrinsics`, `--landmarks`, `--mapping`, `--model-dir`, `--output`; optional `--pointcloud` | JSON |
-| **aggregate_summary.py** | Aggregate week6 metrics into one CSV. | `--week6-dir` (default `outputs/week6`) | `outputs/week6/summary.csv` |
 | **analyze_sparse_alignment.py** | Analyze pose_init JSON reports. | `--reports-dir`, `--output-dir` | Summary stats, plots, CSV |
-| **alignment_and_frame_metrics.py** | Overlay metrics (rigid vs optimized) and frame-to-frame tracking deltas. | `--overlay-metrics-dir` or `--tracking-summary` | Summary stats, improvement in mm |
+| **alignment_and_frame_metrics.py** | Overlay metrics (rigid vs optimized mesh–scan RMSE). | `--overlay-metrics-dir` | Summary stats, improvement in mm |
 | **create_upload_bundle.py** | Pack a minimal subset of `outputs/` for upload (metrics, sample PNGs/PLYs, logs). | `--output-dir`, `--inputs`, `--full-sequence` | `outputs_for_upload/` (or given path) |
 
 **Return values / exit codes:**
@@ -275,8 +246,8 @@ Executables appear in `build/bin/`.
    cmake --build .
    ```
    Executables will be in `build/bin/` (e.g. `face_reconstruction`, `pose_init`, `create_overlays`, `analysis`).
-4. (Optional) Obtain Biwi data: run with `--download` (requires Kaggle credentials) or place data under `data/` as expected by the pipeline.
-5. (Optional) **BFM face model:** download the BFM (see **Large assets** below), then place the file (`.mat` or `.h5`) in `data/bfm/`. The pipeline will convert it to the project format (model setup step) or you can run `pipeline/utils/convert_bfm_to_project.py` manually.
+4.Obtain Biwi data: run with `--download` (requires Kaggle credentials) or place data under `data/` as expected by the pipeline.
+5.**BFM face model:** download the BFM (see **Large assets** below), then place the file (`.mat` or `.h5`) in `data/bfm/`. The pipeline will convert it to the project format (model setup step) or you can run `pipeline/utils/convert_bfm_to_project.py` manually.
 
 ---
 
@@ -291,11 +262,11 @@ python pipeline/main.py
 # Download Biwi data first, then run on 5 frames
 python pipeline/main.py --download --frames 5
 
-# Run with Gauss-Newton optimization and tracking, skip analysis
-python pipeline/main.py --no-analysis --optimize --track
+# Run with Gauss-Newton optimization, skip analysis
+python pipeline/main.py --no-analysis --optimize
 ```
 
-Outputs go under `outputs/` (or `--output-root` if set). See **Entrypoints → Main pipeline** for all options (`--skip-convert`, `--make-overlays`, `--week6-eval`, etc.).
+Outputs go under `outputs/` (or `--output-root` if set). See **Entrypoints → Main pipeline** for all options (`--skip-convert`, `--make-overlays`, etc.).
 
 ---
 
@@ -309,15 +280,15 @@ Outputs go under `outputs/` (or `--output-root` if set). See **Entrypoints → M
 
 ## Example results
 
-After a run (e.g. `python pipeline/main.py --frames 5 --optimize --track`), outputs under `outputs/` look like this:
+After a run (e.g. `python pipeline/main.py --frames 5 --optimize`), outputs under `outputs/` look like this:
 
 **Directory layout**
 - `converted/<seq>/` — RGB, depth, intrinsics, pointclouds per frame
 - `landmarks/<seq>/` — detected 2D landmarks (TXT)
 - `pose_init/<seq>/` — rigid-aligned meshes (`*_aligned.ply`) and `*_rigid_report.json`
-- `meshes/<seq>/` — reconstructed meshes (`*_tracked.ply` or `*_optimized.ply`)
+- `meshes/<seq>/` — reconstructed meshes (`*_optimized.ply`)
 - `overlays_3d/<seq>/` — overlay PLYs and `*_overlay_metrics.json`
-- `analysis/` — `metrics.json`, `tracking_summary_<seq>.json`, depth visualizations
+- `analysis/` — `metrics.json`, depth visualizations
 - `logs/` — pipeline log and summary JSON
 
 **Analysis metrics** (`outputs/analysis/metrics.json`) — one frame example:
@@ -352,23 +323,13 @@ So rigid alignment reduces landmark error from ~800 mm to ~15 mm after Procruste
 ```
 Nearest-neighbor mesh–scan RMSE in meters. Improvement = (0.1548 − 0.1374) × 1000 ≈ **17.4 mm** from optimization.
 
-**Tracking summary** (`outputs/analysis/tracking_summary_<seq>.json`) — one frame:
-```json
-{
-  "frame_idx": 0, "frame_name": "frame_00000",
-  "translation_x": 0.060, "translation_y": 0.152, "translation_z": 1.182,
-  "rotation_angle_deg": 170.6, "scale": 0.00105, "expression_norm": 3.0,
-  "was_reinit": true, "optimization_converged": true
-}
-```
-Use `translation_*`, `rotation_angle_deg`, `scale`, `expression_norm` for per-frame pose/expression. In tracking mode the pipeline optimizes both pose and expression each frame (warm-start from the previous frame), so these values can change over time when the subject moves. For the meaning of `optimization_energy`, `final_energy`, and `depth_rmse_mm`, see the note below.
 
 **Visualizations for the report (where to find figures):**
 - **Depth: observed vs rendered:** `outputs/analysis/depth_residual_vis/<seq>/*_residual.png` — side-by-side or difference of D_obs and D_rend.
 - **Depth colormaps:** `outputs/analysis/depth_vis/<seq>/*.png` — observed/rendered depth as images.
 - **3D mesh–scan overlay:** `outputs/overlays_3d/<seq>/*_overlay_rigid.ply`, `*_overlay_opt.ply` — open in MeshLab/CloudCompare (cyan = scan, red = mesh).
 - **2D overlay (RGB + mesh):** `outputs/overlays/<seq>/*_overlay.png` (landmarks); for mesh projection use `generate_visuals.py` → `overlay_rgb.png`, or `create_overlays` → `*_overlay_2d.png` in the overlay output dir.
-- **Convergence (Gauss-Newton):** `outputs/week6/<seq>/convergence.json` (or per-frame) — plot `energy_history` / `step_norms` vs iteration for convergence curves.
+- **Convergence (Gauss-Newton):** If `face_reconstruction` is run with convergence output, plot `energy_history` / `step_norms` vs iteration.
 - **Pose-init / alignment quality:** Run `scripts/analyze_sparse_alignment.py` → summary stats and plots in the given `--output-dir`.
 
 Include a few of these (e.g. one depth residual, one 3D overlay, one convergence plot) in the written report to show qualitative and quantitative results.
@@ -383,8 +344,8 @@ The course proposal ([LaTeXAuthor_Guidelines_for_Proceedings.pdf](LaTeXAuthor_Gu
 
 | Proposed | Where it is | Files to show |
 |----------|-------------|----------------|
-| **Identity mesh** | Reconstructed identity (mean + α) from first/neutral frame | `meshes/<seq>/<frame>_optimized.ply` or `meshes/<seq>/<frame>_tracked.ply`; for Week 6 eval: `outputs/week6/<seq>/<frame>/meshes/identity.ply` |
-| **Per-frame expression and pose** | Tracked parameters per frame | `analysis/tracking_summary_<seq>.json` (and `.csv`); `tracking/state/<seq>/<frame>_final.json` (R, t, scale, expression, identity) |
+| **Identity mesh** | Reconstructed mesh (mean + α + expression) per frame | `meshes/<seq>/<frame>_optimized.ply` |
+| **Per-frame expression and pose** | Parameters per frame (from reconstruction) | Reconstructed mesh and metrics in `analysis/metrics.json`; pose in pose_init reports |
 | **Depth renderings and overlays** | D_rend vs D_obs and mesh–scan overlays | `analysis/depth_vis/<seq>/*.png` (depth colormaps); `analysis/depth_residual_vis/<seq>/*_residual.png` (D_obs vs D_rend); `overlays_3d/<seq>/*_overlay_rigid.ply`, `*_overlay_opt.ply`; `overlays/<seq>/*.png` (2D overlays) |
 | **Quantitative error plots** | Aggregated metrics and plots | `analysis/metrics.json`; pose_init `*_rigid_report.json`; `overlays_3d/<seq>/*_overlay_metrics.json`; run `scripts/analyze_sparse_alignment.py` and `scripts/compute_metrics.py` for summary stats and plots |
 
@@ -394,20 +355,18 @@ The course proposal ([LaTeXAuthor_Guidelines_for_Proceedings.pdf](LaTeXAuthor_Gu
 |--------------------|-------------|-------------------|
 | **Depth reconstruction error** (RMSE_depth) | `analysis/metrics.json` (per-frame depth stats); `scripts/compute_metrics.py` (depth MAE/RMSE mm); overlay depth comparison | Per-frame depth min/max/mean and cloud–mesh RMSE; optional per-pixel depth error via compute_metrics |
 | **Landmark reprojection error** (Err_lm) | `scripts/compute_metrics.py` (mean/median/RMSE in pixels); pose_init reports (3D alignment RMSE in mm) | 2D reprojection error from mesh landmarks vs detected landmarks; rigid alignment reports ~15 mm 3D landmark error after Procrustes+ICP |
-| **Energy convergence** (E over iterations) | Week 6: `outputs/week6/<seq>/convergence.json` or per-frame `convergence.json` (from `face_reconstruction --output-convergence-json`) | `energy_history`, `step_norms`, `iterations`, `converged` for Gauss–Newton runs |
+| **Energy convergence** (E over iterations) | From `face_reconstruction` if run with convergence output | `energy_history`, `step_norms`, `iterations`, `converged` for Gauss–Newton runs |
 | **Runtime** | `analysis/metrics.json` → `runtime_seconds` per frame; pipeline log for total time | Per-frame reconstruction time (~0.4 s in examples); total pipeline time in logs |
 | **Side-by-side D_obs vs D_rend** | `analysis/depth_residual_vis/<seq>/*_residual.png` | Visual comparison of observed vs rendered depth |
 | **Mesh alignment from multiple viewpoints** | `overlays_3d/<seq>/*.ply` (scan + rigid/opt mesh); open in MeshLab | 3D overlay PLYs (cyan scan, red mesh) for qualitative check |
-| **Temporal smoothness (reduced jitter)** | `analysis/tracking_summary_<seq>.json` (pose/expression per frame); `scripts/alignment_and_frame_metrics.py --tracking-summary` for frame-to-frame deltas | Per-frame pose and expression; use `--temporal-smoothing` (EMA/SLERP) and/or `--lambda-rotation-prior` (e.g. 1.0) to reduce head direction jitter |
-| **Example outputs: identity + tracked expressions** | `meshes/<seq>/*_tracked.ply`; Week 6: `identity.ply`, `expression.ply`, `tracked.ply` | Reconstructed meshes per frame; Stage 1/2/3 meshes in week6 for evaluation protocol |
+| **Example outputs: identity + expression** | `meshes/<seq>/*_optimized.ply` | Reconstructed meshes per frame |
 
 ### Essential files to keep (for report or submission)
 
 To show we delivered the proposal, keep at least:
 
-- **Metrics and reports:** `outputs/analysis/metrics.json`, `outputs/analysis/tracking_summary_01.json` (and optionally `tracking_summary_17.json`), one or two `outputs/pose_init/<seq>/<frame>_rigid_report.json`, one or two `outputs/overlays_3d/<seq>/<frame>_overlay_metrics.json`.
+- **Metrics and reports:** `outputs/analysis/metrics.json`, one or two `outputs/pose_init/<seq>/<frame>_rigid_report.json`, one or two `outputs/overlays_3d/<seq>/<frame>_overlay_metrics.json`.
 - **Qualitative:** A few depth residual PNGs from `analysis/depth_residual_vis/<seq>/`, a few 3D overlay PLYs from `overlays_3d/<seq>/` (e.g. `*_overlay_rigid.ply`, `*_overlay_opt.ply`), and a few meshes from `meshes/<seq>/`.
-- **Convergence (if using Week 6 eval):** `outputs/week6/<seq>/convergence.json` or per-frame `convergence.json`.
 - **Pipeline run proof:** `outputs/logs/pipeline_summary.json` and one pipeline log from `outputs/logs/`.
 
 ### Creating a minimal bundle for upload (e.g. Google Drive)
@@ -418,7 +377,7 @@ To pack a **small copy** of `outputs/` with the same structure but only essentia
 python scripts/create_upload_bundle.py [--output-dir outputs_for_upload] [--inputs outputs] [--full-sequence 01]
 ```
 
-This creates `outputs_for_upload/` (or the path you pass). **Rule:** sequence **01** gets **every frame**; all other sequences get **first frame only**. Contents: analysis metrics and tracking summaries, depth residual/vis PNGs, rigid reports and aligned meshes, reconstructed meshes, overlay metrics and overlay PLYs (all frames for 01, first only for others), tracking state JSON, and pipeline logs. Omitted for size: pointclouds, runtime_meshes. You can then zip `outputs_for_upload` and upload it to a drive folder; a short `README.txt` inside describes the contents.
+This creates `outputs_for_upload/` (or the path you pass). **Rule:** sequence **01** gets **every frame**; all other sequences get **first frame only**. Contents: analysis metrics, depth residual/vis PNGs, rigid reports and aligned meshes, reconstructed meshes, overlay metrics and overlay PLYs, and pipeline logs. Omitted for size: pointclouds, runtime_meshes. You can then zip `outputs_for_upload` and upload it to a drive folder; a short `README.txt` inside describes the contents.
 
 Heavy or redundant data (e.g. all pointclouds, all runtime_meshes, every frame’s PLY) can be omitted; the files above are enough to demonstrate identity mesh, per-frame pose/expression, depth and overlay visuals, and quantitative metrics (depth error, landmark error, convergence, runtime).
 
@@ -436,16 +395,7 @@ Heavy or redundant data (e.g. all pointclouds, all runtime_meshes, every frame�
 - To report these and the improvement:  
   `python scripts/alignment_and_frame_metrics.py --overlay-metrics-dir outputs/overlays_3d`
 
-**Frame-to-frame differences**  
-- Tracking summaries: `outputs/analysis/tracking_summary_<seq>.json` (and CSV) contain per-frame translation, rotation, scale, expression_norm.  
-- To compute deltas between consecutive frames:  
-  `python scripts/alignment_and_frame_metrics.py --tracking-summary outputs/analysis/tracking_summary_01.json`
-
-**Note on tracking summary RMSE fields:**  
-- **`optimization_energy`** and **`final_energy`** are the C++ optimizer’s total energy (sum of weighted squared residuals), not geometric mesh–scan RMSE. Use **`depth_rmse_mm`** for comparable per-pixel depth error in mm when available.  
-- **`final_energy`** is the same value with a correct name; use it for convergence or relative quality.  
-- **`landmark_rmse_mm`** is not computed in tracking (always 0). For landmark/alignment quality use **pose_init** reports (`post_icp_rmse_mm` in `outputs/pose_init/<seq>/<frame>_rigid_report.json`).  
-- For **geometric mesh–scan quality** after tracking, use overlay metrics (`nn_rmse_m` in `*_overlay_metrics.json`) or run the analysis step and see `metrics.json` / `scripts/compute_metrics.py`.
+**Quality metrics:** For geometric mesh–scan quality, use overlay metrics (`nn_rmse_m` in `*_overlay_metrics.json`) or run the analysis step and see `metrics.json` / `scripts/compute_metrics.py`. For landmark/alignment quality use **pose_init** reports (`post_icp_rmse_mm` in `outputs/pose_init/<seq>/<frame>_rigid_report.json`).
 
 ---
 

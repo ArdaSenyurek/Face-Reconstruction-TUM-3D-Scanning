@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Week 6: Compute quantitative metrics for a single frame.
+Compute quantitative metrics for a single frame.
 
 - 2D landmark reprojection error (mean/median/RMSE in pixels)
 - Depth error: observed vs rendered depth (MAE/RMSE in mm) on valid overlap

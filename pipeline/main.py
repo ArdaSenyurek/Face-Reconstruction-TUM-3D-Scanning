@@ -614,8 +614,7 @@ class PipelineOrchestrator:
         )
         from pipeline.steps.overlays import Week4OverlayStep
         from pipeline.steps.preflight import PreflightStep
-        from pipeline.steps.tracking import TrackingStep
-        
+
         start_time = time.time()
         self.logger.summary("Starting Pipeline Execution")
         
@@ -773,79 +772,30 @@ class PipelineOrchestrator:
         else:
             self.logger.step_skip("Week 4 Overlays", "configured to skip or no data")
         
-        # Step 8: Reconstruction or Tracking (Week 5: tracking mode)
+        # Step 8: Reconstruction (single-frame)
         if not self.config.get("skip_reconstruct", False) and "conversion_reports" in self.state:
-            if self.config.get("track", False):
-                # Week 5: Use TrackingStep for sequential processing with warm-start
-                step = TrackingStep(self.logger, {
-                    "binary": self.config.get("recon_binary", Path("build/bin/face_reconstruction")),
-                    "pose_init_binary": self.config.get("pose_init_binary", Path("build/bin/pose_init")),
-                    "overlay_binary": self.config.get("overlay_binary", Path("build/bin/create_overlays")),
-                    "model_dir": self.config.get("model_dir", DEFAULT_MODEL_DIR),
-                    "conversion_reports": self.state.get("conversion_reports", []),
-                    "meshes_root": self.config["output_root"] / "meshes",
-                    "analysis_root": self.config.get("analysis_root", self.config["output_root"] / "analysis"),
-                    "landmarks_root": self.config["output_root"] / "landmarks",
-                    "pose_init_root": self.config["output_root"] / "pose_init",
-                    "tracking_root": self.config["output_root"] / "tracking",
-                    "overlays_3d_root": self.config["output_root"] / "overlays_3d",
-                    "run_frames": self.config.get("run_frames", 5),
-                    "timeout": self.config.get("timeout", 60),
-                    "target_sequences": self.config.get("target_sequences", ["01", "17"]),
-                    # Optimization settings
-                    "optimize": self.config.get("optimize", False),
-                    "landmark_mapping": self.config.get("landmark_mapping", "data/landmark_mapping.txt"),
-                    "verbose": self.config.get("verbose_optimize", False),
-                    "max_iterations": self.config.get("max_iterations", 50),
-                    "lambda_landmark": self.config.get("lambda_landmark", 1.0),
-                    "lambda_depth": self.config.get("lambda_depth", 0.1),
-                    "lambda_reg": self.config.get("lambda_reg", 1.0),
-                    # Week 5: Tracking settings
-                    "temporal_smoothing": self.config.get("temporal_smoothing", False),
-                    "smooth_pose_alpha": self.config.get("smooth_pose_alpha", 0.7),
-                    "smooth_expr_alpha": self.config.get("smooth_expr_alpha", 0.7),
-                    "reinit_every": self.config.get("reinit_every", 0),
-                    "drift_translation_z_thresh_m": self.config.get("drift_translation_z_thresh_m", 0.5),
-                    "drift_translation_norm_thresh_m": self.config.get("drift_translation_norm_thresh_m", 0.0),
-                    "lambda_translation_prior": self.config.get("lambda_translation_prior", 0.5),
-                    "max_translation_delta_m": self.config.get("max_translation_delta_m", 0.1),
-                    "drift_rmse_thresh": self.config.get("drift_rmse_thresh", 80.0),
-                    "drift_z_range_min_m": self.config.get("drift_z_range_min_m", 0.5),
-                    "drift_z_range_max_m": self.config.get("drift_z_range_max_m", 1.5),
-                    "drift_depth_rmse_thresh_mm": self.config.get("drift_depth_rmse_thresh_mm", 0.0),
-                    "save_overlays_3d": self.config.get("save_overlays_3d", True),
-                    "save_depth_residual_vis": self.config.get("save_depth_residual_vis", True),
-                })
-                result = step.run()
-                self._record_result("tracking", result)
-                if result.success:
-                    self.state["tracking_reports"] = result.data.get("reports", [])
-                    self.state["recon_reports"] = result.data.get("reports", [])
-            else:
-                # Standard single-frame reconstruction (Week 4)
-                step = ReconstructionStep(self.logger, {
-                    "binary": self.config.get("recon_binary", Path("build/bin/face_reconstruction")),
-                    "model_dir": self.config.get("model_dir", DEFAULT_MODEL_DIR),
-                    "conversion_reports": self.state.get("conversion_reports", []),
-                    "meshes_root": self.config["output_root"] / "meshes",
-                    "analysis_root": self.config.get("analysis_root", self.config["output_root"] / "analysis"),
-                    "landmarks_root": self.config["output_root"] / "landmarks",
-                    "run_frames": self.config.get("run_frames", 5),
-                    "timeout": self.config.get("timeout", 60),
-                    "save_pointclouds": self.config.get("save_pointclouds", False),
-                    # Week 4: Optimization settings
-                    "optimize": self.config.get("optimize", False),
-                    "landmark_mapping": self.config.get("landmark_mapping", "data/landmark_mapping.txt"),
-                    "verbose": self.config.get("verbose_optimize", False),
-                    "max_iterations": self.config.get("max_iterations", 50),
-                    "lambda_landmark": self.config.get("lambda_landmark", 1.0),
-                    "lambda_depth": self.config.get("lambda_depth", 0.1),
-                    "lambda_reg": self.config.get("lambda_reg", 1.0),
-                })
-                result = step.run()
-                self._record_result("reconstruction", result)
-                if result.success:
-                    self.state["recon_reports"] = result.data.get("reports", [])
+            step = ReconstructionStep(self.logger, {
+                "binary": self.config.get("recon_binary", Path("build/bin/face_reconstruction")),
+                "model_dir": self.config.get("model_dir", DEFAULT_MODEL_DIR),
+                "conversion_reports": self.state.get("conversion_reports", []),
+                "meshes_root": self.config["output_root"] / "meshes",
+                "analysis_root": self.config.get("analysis_root", self.config["output_root"] / "analysis"),
+                "landmarks_root": self.config["output_root"] / "landmarks",
+                "run_frames": self.config.get("run_frames", 5),
+                "timeout": self.config.get("timeout", 60),
+                "save_pointclouds": self.config.get("save_pointclouds", False),
+                "optimize": self.config.get("optimize", False),
+                "landmark_mapping": self.config.get("landmark_mapping", "data/landmark_mapping.txt"),
+                "verbose": self.config.get("verbose_optimize", False),
+                "max_iterations": self.config.get("max_iterations", 50),
+                "lambda_landmark": self.config.get("lambda_landmark", 1.0),
+                "lambda_depth": self.config.get("lambda_depth", 0.1),
+                "lambda_reg": self.config.get("lambda_reg", 1.0),
+            })
+            result = step.run()
+            self._record_result("reconstruction", result)
+            if result.success:
+                self.state["recon_reports"] = result.data.get("reports", [])
         else:
             self.logger.step_skip("3D Reconstruction", "configured to skip")
         
@@ -1040,42 +990,6 @@ Examples:
     parser.add_argument("--target-sequences", type=str, nargs="+", default=["01", "17"],
                       help="Sequences to generate overlays for (default: 01 17)")
     
-    # Week 5: Tracking mode
-    parser.add_argument("--track", action="store_true",
-                      help="Enable sequential tracking mode (warm-start from previous frame)")
-    parser.add_argument("--temporal-smoothing", action="store_true",
-                      help="Enable temporal smoothing across frames (EMA + SLERP)")
-    parser.add_argument("--smooth-pose-alpha", type=float, default=0.7,
-                      help="EMA alpha for pose smoothing (0=no smoothing, 1=full smoothing, default: 0.7)")
-    parser.add_argument("--smooth-expr-alpha", type=float, default=0.7,
-                      help="EMA alpha for expression smoothing (default: 0.7)")
-    parser.add_argument("--reinit-every", type=int, default=0,
-                      help="Re-run Procrustes every K frames (0=never, default: 0)")
-    parser.add_argument("--drift-translation-z-thresh", type=float, default=0.5,
-                      help="Translation z delta (m) above which to reinit tracking (0=disable, default: 0.5)")
-    parser.add_argument("--drift-translation-norm-thresh", type=float, default=0.0,
-                      help="Translation norm delta (m) above which to reinit tracking (0=disable, default: 0)")
-    parser.add_argument("--lambda-translation-prior", type=float, default=0.5,
-                      help="Translation prior weight in tracking to reduce drift (default: 0.5; try 1.0 or 2.0 if still drifting)")
-    parser.add_argument("--max-translation-delta", type=float, default=0.1,
-                      help="Max translation change per frame in meters (default: 0.1; 0=no clip)")
-    parser.add_argument("--drift-rmse-thresh", type=float, default=80.0,
-                      help="RMSE threshold (mm) for drift detection and auto re-init (default: 80.0)")
-    parser.add_argument("--drift-z-range-min", type=float, default=0.5,
-                      help="Min plausible translation Z (m); reinit if previous pose Z below this (default: 0.5)")
-    parser.add_argument("--drift-z-range-max", type=float, default=1.5,
-                      help="Max plausible translation Z (m); reinit if previous pose Z above this (default: 1.5)")
-    parser.add_argument("--drift-depth-rmse-thresh", type=float, default=0.0,
-                      help="Reinit when per-pixel depth RMSE (mm) exceeds this (0=disable, default: 0)")
-    parser.add_argument("--save-overlays-3d", action="store_true", default=True,
-                      help="Save per-frame 3D overlay PLY files (default: True)")
-    parser.add_argument("--save-depth-residual-vis", action="store_true", default=True,
-                      help="Save per-frame depth residual visualizations (default: True)")
-    
-    # Week 6: Run 3-stage evaluation protocol (identity → expression → tracking)
-    parser.add_argument("--week6-eval", action="store_true",
-                      help="Run Week 6 evaluation script (3-stage protocol); outputs/week6/")
-    
     return parser
 
 
@@ -1137,42 +1051,11 @@ def main() -> int:
         "lambda_depth": args.lambda_depth,
         "lambda_reg": args.lambda_reg,
         "verbose_optimize": args.verbose_optimize,
-        # Week 4: Overlay generation
+        # Overlay generation
         "make_overlays": args.make_overlays,
         "target_sequences": args.target_sequences,
-        # Week 5: Tracking settings
-        "track": args.track,
-        "temporal_smoothing": args.temporal_smoothing,
-        "smooth_pose_alpha": args.smooth_pose_alpha,
-        "smooth_expr_alpha": args.smooth_expr_alpha,
-        "reinit_every": args.reinit_every,
-        "drift_translation_z_thresh_m": args.drift_translation_z_thresh,
-        "drift_translation_norm_thresh_m": args.drift_translation_norm_thresh,
-        "lambda_translation_prior": args.lambda_translation_prior,
-        "max_translation_delta_m": args.max_translation_delta,
-        "drift_rmse_thresh": args.drift_rmse_thresh,
-        "drift_z_range_min_m": args.drift_z_range_min,
-        "drift_z_range_max_m": args.drift_z_range_max,
-        "drift_depth_rmse_thresh_mm": args.drift_depth_rmse_thresh,
-        "save_overlays_3d": args.save_overlays_3d,
-        "save_depth_residual_vis": args.save_depth_residual_vis,
-        "week6_eval": getattr(args, "week6_eval", False),
     }
-    
-    # Week 6: Run evaluation script and exit (no full pipeline)
-    if config.get("week6_eval"):
-        import subprocess
-        script = Path(__file__).parent.parent / "scripts" / "run_eval.py"
-        if not script.exists():
-            logger.error(f"Week 6 script not found: {script}")
-            return 1
-        cmd = [sys.executable, str(script), "--output-root", str(args.output_root)]
-        if args.sequence and len(args.sequence) > 0:
-            cmd += ["--sequences"] + args.sequence
-        logger.info("Running Week 6 evaluation: " + " ".join(cmd))
-        ret = subprocess.run(cmd, cwd=str(Path(__file__).parent.parent))
-        return ret.returncode
-    
+
     # Run pipeline
     try:
         orchestrator = PipelineOrchestrator(logger, config)

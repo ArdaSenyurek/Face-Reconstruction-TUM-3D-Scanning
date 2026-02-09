@@ -13,7 +13,6 @@ from .reconstruction import ReconstructionStep
 from .analysis import AnalysisStep
 from .tests import TestsStep
 from .preflight import PreflightStep
-from .tracking import TrackingStep
 
 __all__ = [
     "PreflightStep",
@@ -27,6 +26,5 @@ __all__ = [
     "ReconstructionStep",
     "TestsStep",
     "AnalysisStep",
-    "TrackingStep",
 ]
 
