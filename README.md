@@ -4,6 +4,8 @@
 
 **Repository:** [https://github.com/ArdaSenyurek/Face-Reconstruction-TUM-3D-Scanning](https://github.com/ArdaSenyurek/Face-Reconstruction-TUM-3D-Scanning)
 
+**Sample outputs and metrics:** [...]()
+
 This README lists all **entrypoint files** (main pipeline, C++ tools, scripts, utils), **what each does and produces** (inputs, outputs, purpose), **dependencies and installation**, and **how to launch** the project; it does not document every internal function.
 
 **Summary of accomplishments (key metrics):**
