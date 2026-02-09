@@ -23,6 +23,9 @@ data/biwi_download/
 outputs/
 reports/
 *.pdf
+sample_outputs_small_size/
+outputs_for_upload/
+*.zip
 
 # Python
 __pycache__/

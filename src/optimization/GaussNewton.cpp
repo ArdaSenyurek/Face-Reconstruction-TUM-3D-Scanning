@@ -6,9 +6,10 @@
  */
 
 #include "optimization/GaussNewton.h"
-#include <iostream>
-#include <iomanip>
+#include <algorithm>
 #include <cmath>
+#include <iomanip>
+#include <iostream>
 
 namespace face_reconstruction {
 
@@ -20,38 +21,34 @@ void GaussNewtonOptimizer::initialize(const MorphableModel& model,
     initialized_ = true;
 }
 
-Eigen::VectorXd GaussNewtonOptimizer::solveLinearSystem(
-    const Eigen::MatrixXd& J,
-    const Eigen::VectorXd& r) {
-    
-    // Compute J^T * J and J^T * r
-    Eigen::MatrixXd JtJ = J.transpose() * J;
-    Eigen::VectorXd Jtr = J.transpose() * r;
-    
-    // Add damping for numerical stability (Levenberg-Marquardt style)
-    int n = JtJ.rows();
+Eigen::VectorXd GaussNewtonOptimizer::solveNormalEquations(
+    const Eigen::MatrixXd& JtJ,
+    const Eigen::VectorXd& Jtr) {
+    Eigen::MatrixXd JtJ_damped = JtJ;
+    int n = JtJ_damped.rows();
     for (int i = 0; i < n; ++i) {
-        JtJ(i, i) += damping_ * (JtJ(i, i) + 1.0);
+        JtJ_damped(i, i) += damping_ * (JtJ(i, i) + 1.0);
     }
-    
-    // Solve using Cholesky decomposition (more stable than direct inverse)
-    Eigen::LLT<Eigen::MatrixXd> llt(JtJ);
-    
+    Eigen::LLT<Eigen::MatrixXd> llt(JtJ_damped);
     if (llt.info() == Eigen::Success) {
         return llt.solve(-Jtr);
     }
-    
-    // Fallback to LDLT if Cholesky fails
-    Eigen::LDLT<Eigen::MatrixXd> ldlt(JtJ);
+    Eigen::LDLT<Eigen::MatrixXd> ldlt(JtJ_damped);
     if (ldlt.info() == Eigen::Success) {
         return ldlt.solve(-Jtr);
     }
-    
-    // Last resort: pseudoinverse
     if (verbose_) {
         std::cout << "Warning: Using pseudoinverse for linear solve" << std::endl;
     }
-    return JtJ.completeOrthogonalDecomposition().solve(-Jtr);
+    return JtJ_damped.completeOrthogonalDecomposition().solve(-Jtr);
+}
+
+Eigen::VectorXd GaussNewtonOptimizer::solveLinearSystem(
+    const Eigen::MatrixXd& J,
+    const Eigen::VectorXd& r) {
+    Eigen::MatrixXd JtJ = J.transpose() * J;
+    Eigen::VectorXd Jtr = J.transpose() * r;
+    return solveNormalEquations(JtJ, Jtr);
 }
 
 bool GaussNewtonOptimizer::checkConvergence(const Eigen::VectorXd& delta, 
@@ -76,6 +73,17 @@ OptimizationResult GaussNewtonOptimizer::optimize(
     
     // Copy initial parameters
     OptimizationParams params = initial_params;
+    
+    // Set translation prior (previous frame pose) for tracking; reduces drift when lambda_translation_prior > 0
+    energy_func_.setTranslationPrior(initial_params.t);
+    if (params.lambda_translation_prior > 0) {
+        t_prior_ = initial_params.t;
+        if (damping_ < 5e-4) {
+            damping_ = 5e-4;
+        }
+    } else {
+        t_prior_ = Eigen::Vector3d::Zero();
+    }
     
     // Ensure coefficient vectors have correct size
     if (params.alpha.size() == 0 && model_->num_identity_components > 0) {
@@ -133,8 +141,17 @@ OptimizationResult GaussNewtonOptimizer::optimize(
             break;
         }
         
-        // Solve for parameter update
-        Eigen::VectorXd delta = solveLinearSystem(J, residuals);
+        // Build normal equations and add translation prior in the linear system when used
+        Eigen::MatrixXd JtJ = J.transpose() * J;
+        Eigen::VectorXd Jtr = J.transpose() * residuals;
+        if (params.lambda_translation_prior > 0 && params.numParameters() >= 3) {
+            int ti = params.numParameters() - 3;
+            JtJ(ti, ti) += params.lambda_translation_prior;
+            JtJ(ti + 1, ti + 1) += params.lambda_translation_prior;
+            JtJ(ti + 2, ti + 2) += params.lambda_translation_prior;
+            Jtr.segment(ti, 3) += params.lambda_translation_prior * (params.t - t_prior_);
+        }
+        Eigen::VectorXd delta = solveNormalEquations(JtJ, Jtr);
         
         // Apply step size
         delta *= params.step_size;
@@ -171,6 +188,13 @@ OptimizationResult GaussNewtonOptimizer::optimize(
         
         // Update parameters
         params = best_params;
+        // Translation clipping: hard-bound drift when prior is used
+        if (params.lambda_translation_prior > 0 && params.max_translation_delta_m > 0) {
+            double md = params.max_translation_delta_m;
+            for (int i = 0; i < 3; ++i) {
+                params.t(i) = std::max(t_prior_(i) - md, std::min(t_prior_(i) + md, params.t(i)));
+            }
+        }
         result.energy_history.push_back(best_energy);
         result.step_norms.push_back((delta * step).norm());
         

@@ -274,10 +274,11 @@ class TrackingStep(PipelineStep):
                 continue
             
             # Determine if we need to (re)initialize
+            prev_prev_frame_name = frames[frame_idx - 2].stem if frame_idx >= 2 else None
             needs_init = (
                 frame_idx == 0 or 
                 state is None or
-                self._should_reinit(frame_idx, state)
+                self._should_reinit(frame_idx, state, seq_id=seq_id, prev_prev_frame_name=prev_prev_frame_name)
             )
             
             if needs_init:
@@ -348,7 +349,13 @@ class TrackingStep(PipelineStep):
         
         return metrics_list
     
-    def _should_reinit(self, frame_idx: int, state: TrackingState) -> bool:
+    def _should_reinit(
+        self,
+        frame_idx: int,
+        state: TrackingState,
+        seq_id: Optional[str] = None,
+        prev_prev_frame_name: Optional[str] = None,
+    ) -> bool:
         """Check if re-initialization is needed."""
         reinit_every = self.config.get("reinit_every", 0)
         
@@ -357,10 +364,34 @@ class TrackingStep(PipelineStep):
             self.logger.info(f"    Triggering periodic re-init (every {reinit_every} frames)")
             return True
         
+        # Translation-delta drift detection (when config is set)
+        if frame_idx >= 2 and seq_id and prev_prev_frame_name:
+            drift_z_thresh = self.config.get("drift_translation_z_thresh_m", 0.5)
+            drift_norm_thresh = self.config.get("drift_translation_norm_thresh_m", 0.0)
+            if drift_z_thresh <= 0 and drift_norm_thresh <= 0:
+                pass
+            else:
+                prev_prev_state_path = self._get_state_path(seq_id, prev_prev_frame_name, "final")
+                if prev_prev_state_path.exists():
+                    try:
+                        prev_prev_state = TrackingState.load(prev_prev_state_path)
+                        delta = np.array(state.translation) - np.array(prev_prev_state.translation)
+                        if drift_z_thresh > 0 and abs(delta[2]) >= drift_z_thresh:
+                            self.logger.info(
+                                f"    Triggering re-init: translation_z delta {delta[2]:.3f} m >= {drift_z_thresh} m"
+                            )
+                            return True
+                        if drift_norm_thresh > 0 and np.linalg.norm(delta) >= drift_norm_thresh:
+                            self.logger.info(
+                                f"    Triggering re-init: translation norm delta {np.linalg.norm(delta):.3f} m >= {drift_norm_thresh} m"
+                            )
+                            return True
+                    except Exception as e:
+                        self.logger.debug(f"Could not load prev-prev state for drift check: {e}")
+        
         # Note: Drift detection based on RMSE threshold is disabled because
         # the current implementation stores optimization energy, not actual RMSE.
         # To enable drift detection, compute actual mesh-scan RMSE in _compute_frame_metrics.
-        
         return False
     
     def _init_from_procrustes(
@@ -482,6 +513,7 @@ class TrackingStep(PipelineStep):
             "--lambda-landmark", str(self.config.get("lambda_landmark", 1.0)),
             "--lambda-depth", str(self.config.get("lambda_depth", 0.1)),
             "--lambda-reg", str(self.config.get("lambda_reg", 10.0)),
+            "--lambda-translation-prior", str(self.config.get("lambda_translation_prior", 0.5)),
         ]
         
         if self.config.get("optimize", False):

@@ -263,6 +263,134 @@ Files larger than ~15 MB (e.g. BFM model) are **not** included in the repository
 
 ---
 
+## Example results
+
+After a run (e.g. `python pipeline/main.py --frames 5 --optimize --track`), outputs under `outputs/` look like this:
+
+**Directory layout**
+- `converted/<seq>/` — RGB, depth, intrinsics, pointclouds per frame
+- `landmarks/<seq>/` — detected 2D landmarks (TXT)
+- `pose_init/<seq>/` — rigid-aligned meshes (`*_aligned.ply`) and `*_rigid_report.json`
+- `meshes/<seq>/` — reconstructed meshes (`*_tracked.ply` or `*_optimized.ply`)
+- `overlays_3d/<seq>/` — overlay PLYs and `*_overlay_metrics.json`
+- `analysis/` — `metrics.json`, `tracking_summary_<seq>.json`, depth visualizations
+- `logs/` — pipeline log and summary JSON
+
+**Analysis metrics** (`outputs/analysis/metrics.json`) — one frame example:
+```json
+"01": {
+  "frame_00000": {
+    "cloud_points": 56336.0,
+    "depth_min": 0.782, "depth_max": 0.997, "depth_mean": 0.87,
+    "rmse_cloud_mesh_m": 0.152,
+    "runtime_seconds": 0.40
+  }
+}
+```
+`rmse_cloud_mesh_m` is pointcloud-to-mesh RMSE in meters (~152 mm here).
+
+**Rigid alignment** (`outputs/pose_init/<seq>/<frame>_rigid_report.json`) — example snippet:
+```json
+"mapping_quality": { "pre_alignment_rmse_mm": 800.1 },
+"procrustes_analysis": {
+  "post_procrustes_rmse_mm": 14.94,
+  "post_icp_rmse_mm": 15.13,
+  "improvement_percent": 98.1
+},
+"alignment_errors": { "rmse_mm": 15.13 }
+```
+So rigid alignment reduces landmark error from ~800 mm to ~15 mm after Procrustes + ICP.
+
+**Rigid vs optimized** (`outputs/overlays_3d/<seq>/<frame>_overlay_metrics.json`) — example:
+```json
+"rigid":     { "nn_rmse_m": 0.1548 },
+"optimized": { "nn_rmse_m": 0.1374 }
+```
+Nearest-neighbor mesh–scan RMSE in meters. Improvement = (0.1548 − 0.1374) × 1000 ≈ **17.4 mm** from optimization.
+
+**Tracking summary** (`outputs/analysis/tracking_summary_<seq>.json`) — one frame:
+```json
+{
+  "frame_idx": 0, "frame_name": "frame_00000",
+  "translation_x": 0.060, "translation_y": 0.152, "translation_z": 1.182,
+  "rotation_angle_deg": 170.6, "scale": 0.00105, "expression_norm": 3.0,
+  "was_reinit": true, "optimization_converged": true
+}
+```
+Use `translation_*`, `rotation_angle_deg`, `scale`, `expression_norm` for per-frame pose/expression. In tracking mode the pipeline optimizes both pose and expression each frame (warm-start from the previous frame), so these values can change over time when the subject moves. The `face_nn_rmse_mm` field in this file is currently optimization energy, not geometric RMSE in mm (see note below).
+
+---
+
+## Outputs that demonstrate the project (proposal → deliverables)
+
+The course proposal ([LaTeXAuthor_Guidelines_for_Proceedings.pdf](LaTeXAuthor_Guidelines_for_Proceedings.pdf)) defines **Section 2.5 Outputs** and **Section 4 Evaluation**. We implemented the full pipeline and produce all proposed outputs and metrics; below is where each deliverable lives in `outputs/` and what we achieved.
+
+### Proposed outputs (Section 2.5)
+
+| Proposed | Where it is | Files to show |
+|----------|-------------|----------------|
+| **Identity mesh** | Reconstructed identity (mean + α) from first/neutral frame | `meshes/<seq>/<frame>_optimized.ply` or `meshes/<seq>/<frame>_tracked.ply`; for Week 6 eval: `outputs/week6/<seq>/<frame>/meshes/identity.ply` |
+| **Per-frame expression and pose** | Tracked parameters per frame | `analysis/tracking_summary_<seq>.json` (and `.csv`); `tracking/state/<seq>/<frame>_final.json` (R, t, scale, expression, identity) |
+| **Depth renderings and overlays** | D_rend vs D_obs and mesh–scan overlays | `analysis/depth_vis/<seq>/*.png` (depth colormaps); `analysis/depth_residual_vis/<seq>/*_residual.png` (D_obs vs D_rend); `overlays_3d/<seq>/*_overlay_rigid.ply`, `*_overlay_opt.ply`; `overlays/<seq>/*.png` (2D overlays) |
+| **Quantitative error plots** | Aggregated metrics and plots | `analysis/metrics.json`; pose_init `*_rigid_report.json`; `overlays_3d/<seq>/*_overlay_metrics.json`; run `scripts/analyze_sparse_alignment.py` and `scripts/compute_metrics.py` for summary stats and plots |
+
+### Proposed evaluation (Section 4)
+
+| Metric / evaluation | Where it is | What we achieved |
+|--------------------|-------------|-------------------|
+| **Depth reconstruction error** (RMSE_depth) | `analysis/metrics.json` (per-frame depth stats); `scripts/compute_metrics.py` (depth MAE/RMSE mm); overlay depth comparison | Per-frame depth min/max/mean and cloud–mesh RMSE; optional per-pixel depth error via compute_metrics |
+| **Landmark reprojection error** (Err_lm) | `scripts/compute_metrics.py` (mean/median/RMSE in pixels); pose_init reports (3D alignment RMSE in mm) | 2D reprojection error from mesh landmarks vs detected landmarks; rigid alignment reports ~15 mm 3D landmark error after Procrustes+ICP |
+| **Energy convergence** (E over iterations) | Week 6: `outputs/week6/<seq>/convergence.json` or per-frame `convergence.json` (from `face_reconstruction --output-convergence-json`) | `energy_history`, `step_norms`, `iterations`, `converged` for Gauss–Newton runs |
+| **Runtime** | `analysis/metrics.json` → `runtime_seconds` per frame; pipeline log for total time | Per-frame reconstruction time (~0.4 s in examples); total pipeline time in logs |
+| **Side-by-side D_obs vs D_rend** | `analysis/depth_residual_vis/<seq>/*_residual.png` | Visual comparison of observed vs rendered depth |
+| **Mesh alignment from multiple viewpoints** | `overlays_3d/<seq>/*.ply` (scan + rigid/opt mesh); open in MeshLab | 3D overlay PLYs (cyan scan, red mesh) for qualitative check |
+| **Temporal smoothness (reduced jitter)** | `analysis/tracking_summary_<seq>.json` (pose/expression per frame); `scripts/alignment_and_frame_metrics.py --tracking-summary` for frame-to-frame deltas | Per-frame pose and expression; optional temporal smoothing (EMA/SLERP) in pipeline |
+| **Example outputs: identity + tracked expressions** | `meshes/<seq>/*_tracked.ply`; Week 6: `identity.ply`, `expression.ply`, `tracked.ply` | Reconstructed meshes per frame; Stage 1/2/3 meshes in week6 for evaluation protocol |
+
+### Essential files to keep (for report or submission)
+
+To show we delivered the proposal, keep at least:
+
+- **Metrics and reports:** `outputs/analysis/metrics.json`, `outputs/analysis/tracking_summary_01.json` (and optionally `tracking_summary_17.json`), one or two `outputs/pose_init/<seq>/<frame>_rigid_report.json`, one or two `outputs/overlays_3d/<seq>/<frame>_overlay_metrics.json`.
+- **Qualitative:** A few depth residual PNGs from `analysis/depth_residual_vis/<seq>/`, a few 3D overlay PLYs from `overlays_3d/<seq>/` (e.g. `*_overlay_rigid.ply`, `*_overlay_opt.ply`), and a few meshes from `meshes/<seq>/`.
+- **Convergence (if using Week 6 eval):** `outputs/week6/<seq>/convergence.json` or per-frame `convergence.json`.
+- **Pipeline run proof:** `outputs/logs/pipeline_summary.json` and one pipeline log from `outputs/logs/`.
+
+### Creating a minimal bundle for upload (e.g. Google Drive)
+
+To pack a **small copy** of `outputs/` with the same structure but only essential files (metrics, sample images, sample PLYs, logs):
+
+```bash
+python scripts/create_upload_bundle.py [--output-dir outputs_for_upload] [--inputs outputs] [--full-sequence 01]
+```
+
+This creates `outputs_for_upload/` (or the path you pass). **Rule:** sequence **01** gets **every frame**; all other sequences get **first frame only**. Contents: analysis metrics and tracking summaries, depth residual/vis PNGs, rigid reports and aligned meshes, reconstructed meshes, overlay metrics and overlay PLYs (all frames for 01, first only for others), tracking state JSON, and pipeline logs. Omitted for size: pointclouds, runtime_meshes. You can then zip `outputs_for_upload` and upload it to a drive folder; a short `README.txt` inside describes the contents.
+
+Heavy or redundant data (e.g. all pointclouds, all runtime_meshes, every frame’s PLY) can be omitted; the files above are enough to demonstrate identity mesh, per-frame pose/expression, depth and overlay visuals, and quantitative metrics (depth error, landmark error, convergence, runtime).
+
+---
+
+## Checking alignment quality and frame differences
+
+**Rigid alignment (pose init)**  
+- Per-frame reports: `outputs/pose_init/<seq>/<frame>_rigid_report.json` with `pre_alignment_rmse_mm`, `post_procrustes_rmse_mm`, `post_icp_rmse_mm`.  
+- To aggregate and plot:  
+  `python scripts/analyze_sparse_alignment.py --reports-dir outputs/pose_init --output-dir outputs/analysis`
+
+**Rigid vs non-rigid (optimized)**  
+- When overlays are generated with both rigid and optimized mesh, `create_overlays` writes `*_overlay_metrics.json` with `rigid.nn_rmse_m` and `optimized.nn_rmse_m` (nearest-neighbor mesh–scan RMSE in meters). The difference (rigid − optimized) in mm is the improvement from optimization.  
+- To report these and the improvement:  
+  `python scripts/alignment_and_frame_metrics.py --overlay-metrics-dir outputs/overlays_3d`
+
+**Frame-to-frame differences**  
+- Tracking summaries: `outputs/analysis/tracking_summary_<seq>.json` (and CSV) contain per-frame translation, rotation, scale, expression_norm.  
+- To compute deltas between consecutive frames:  
+  `python scripts/alignment_and_frame_metrics.py --tracking-summary outputs/analysis/tracking_summary_01.json`
+
+**Note:** The `face_nn_rmse_mm` field in the tracking summary is currently filled from the optimization energy written by the C++ binary, not from a mesh–scan RMSE in mm. So large values there (e.g. 88xxx) are not real mm; use overlay metrics or `compute_metrics.py` for actual geometric errors.
+
+---
+
 ## License
 
 See [LICENSE](LICENSE).

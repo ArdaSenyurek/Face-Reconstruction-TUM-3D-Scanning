@@ -24,6 +24,11 @@ void EnergyFunction::initialize(const MorphableModel& model,
     initialized_ = true;
 }
 
+void EnergyFunction::setTranslationPrior(const Eigen::Vector3d& t_prior) {
+    t_prior_ = t_prior;
+    use_translation_prior_ = true;
+}
+
 Eigen::MatrixXd EnergyFunction::reconstructMesh(const OptimizationParams& params) const {
     if (!model_ || !model_->isValid()) {
         return Eigen::MatrixXd();
@@ -199,10 +204,11 @@ double EnergyFunction::computeTotalEnergy(
     double e_landmark = computeLandmarkEnergy(params, landmarks, mapping);
     double e_depth = computeDepthEnergy(params, observed_depth);
     double e_reg = computeRegularization(params);
+    double e_prior = computeTranslationPriorEnergy(params);
     
     return params.lambda_landmark * e_landmark + 
            params.lambda_depth * e_depth + 
-           e_reg;
+           e_reg + e_prior;
 }
 
 Eigen::VectorXd EnergyFunction::computeLandmarkResiduals(
@@ -325,6 +331,25 @@ Eigen::VectorXd EnergyFunction::computeRegResiduals(const OptimizationParams& pa
     return residuals;
 }
 
+double EnergyFunction::computeTranslationPriorEnergy(const OptimizationParams& params) const {
+    if (!use_translation_prior_ || params.lambda_translation_prior <= 0.0) {
+        return 0.0;
+    }
+    return params.lambda_translation_prior * (params.t - t_prior_).squaredNorm();
+}
+
+Eigen::VectorXd EnergyFunction::computeTranslationPriorResiduals(const OptimizationParams& params) const {
+    if (!use_translation_prior_ || params.lambda_translation_prior <= 0.0) {
+        return Eigen::VectorXd(0);
+    }
+    double w = std::sqrt(params.lambda_translation_prior);
+    Eigen::VectorXd r(3);
+    r(0) = w * (params.t(0) - t_prior_(0));
+    r(1) = w * (params.t(1) - t_prior_(1));
+    r(2) = w * (params.t(2) - t_prior_(2));
+    return r;
+}
+
 Eigen::VectorXd EnergyFunction::computeResiduals(
     const OptimizationParams& params,
     const LandmarkData& landmarks,
@@ -334,8 +359,7 @@ Eigen::VectorXd EnergyFunction::computeResiduals(
     Eigen::VectorXd lm_residuals = computeLandmarkResiduals(params, landmarks, mapping);
     Eigen::VectorXd depth_residuals = computeDepthResiduals(params, observed_depth);
     Eigen::VectorXd reg_residuals = computeRegResiduals(params);
-    
-    // Concatenate all residuals
+    // Prior is applied in the normal equations (GaussNewton), not as residuals, to avoid scale imbalance
     int total_size = lm_residuals.size() + depth_residuals.size() + reg_residuals.size();
     Eigen::VectorXd residuals(total_size);
     
@@ -351,7 +375,6 @@ Eigen::VectorXd EnergyFunction::computeResiduals(
     if (reg_residuals.size() > 0) {
         residuals.segment(idx, reg_residuals.size()) = reg_residuals;
     }
-    
     return residuals;
 }
 

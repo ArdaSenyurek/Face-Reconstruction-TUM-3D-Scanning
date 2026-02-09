@@ -108,6 +108,11 @@ public:
      */
     Eigen::MatrixXd getTransformedVertices(const OptimizationParams& params) const;
 
+    /**
+     * Set translation prior (previous frame pose) for tracking; penalizes ||t - t_prior||^2 when lambda_translation_prior > 0.
+     */
+    void setTranslationPrior(const Eigen::Vector3d& t_prior);
+
 private:
     const MorphableModel* model_ = nullptr;
     CameraIntrinsics intrinsics_;
@@ -120,6 +125,10 @@ private:
     
     // Depth sampling parameters (for efficiency)
     int depth_sample_step_ = 16;  // Sample every Nth pixel (higher = faster)
+
+    // Translation prior for tracking (reduce drift)
+    Eigen::Vector3d t_prior_ = Eigen::Vector3d::Zero();
+    bool use_translation_prior_ = false;
     
     /**
      * Reconstruct face mesh with given parameters
@@ -161,6 +170,16 @@ private:
      * Compute regularization residuals
      */
     Eigen::VectorXd computeRegResiduals(const OptimizationParams& params) const;
+
+    /**
+     * Compute translation prior energy: lambda * ||t - t_prior||^2
+     */
+    double computeTranslationPriorEnergy(const OptimizationParams& params) const;
+
+    /**
+     * Compute translation prior residuals: sqrt(lambda) * (t - t_prior) for Gauss-Newton
+     */
+    Eigen::VectorXd computeTranslationPriorResiduals(const OptimizationParams& params) const;
 };
 
 } // namespace face_reconstruction

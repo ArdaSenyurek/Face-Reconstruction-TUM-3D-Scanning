@@ -6,6 +6,7 @@
 #include "landmarks/LandmarkData.h"
 #include "alignment/LandmarkMapping.h"
 #include "camera/CameraIntrinsics.h"
+#include <Eigen/Dense>
 #include <opencv2/core.hpp>
 
 namespace face_reconstruction {
@@ -60,6 +61,14 @@ private:
     
     // Damping factor for Levenberg-Marquardt style regularization
     double damping_ = 1e-4;
+    
+    // Translation prior (previous frame t) for tracking; used in normal equations and clipping
+    Eigen::Vector3d t_prior_ = Eigen::Vector3d::Zero();
+    
+    /**
+     * Solve (JtJ + damping) * delta = -Jtr. Used after optionally adding prior to JtJ/Jtr.
+     */
+    Eigen::VectorXd solveNormalEquations(const Eigen::MatrixXd& JtJ, const Eigen::VectorXd& Jtr);
     
     /**
      * Solve the linear system (J^T * J + lambda * I) * delta = -J^T * r

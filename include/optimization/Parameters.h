@@ -31,6 +31,8 @@ struct OptimizationParams {
     double lambda_delta = 1.0;   // Weight for expression regularization
     double lambda_landmark = 1.0; // Weight for landmark term
     double lambda_depth = 0.1;   // Weight for depth term (lower than landmarks for stability)
+    double lambda_translation_prior = 0.0;  // Weight for translation prior (0 = disabled; used in tracking to reduce drift)
+    double max_translation_delta_m = 0.0;   // Max translation change per frame in meters (0 = no clip; used with prior)
     
     // Optimizer settings
     int max_iterations = 50;

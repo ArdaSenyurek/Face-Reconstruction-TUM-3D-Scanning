@@ -292,6 +292,7 @@ void printUsage(const char* program_name) {
               << "  --lambda-reg <w>          Regularization weight (default: 1.0)\n"
               << "  --lambda-alpha <w>        Identity regularization (Week 6, overrides lambda-reg)\n"
               << "  --lambda-delta <w>        Expression regularization (Week 6, overrides lambda-reg)\n"
+              << "  --lambda-translation-prior <w>  Translation prior weight in tracking (default: 0.5, 0=off)\n"
               << "  --verbose                 Print detailed optimization output\n"
               << "  --help                    Show this help message\n"
               << "\n"
@@ -326,6 +327,7 @@ int main(int argc, char* argv[]) {
     double lambda_reg = 1.0;
     double lambda_alpha_sep = 0.0;  // Week 6: if > 0 use for identity; else lambda_reg
     double lambda_delta_sep = 0.0;  // Week 6: if > 0 use for expression; else lambda_reg
+    double lambda_translation_prior = 0.5;  // Translation prior in tracking (0 = disabled)
     
     // Parse command line arguments
     for (int i = 1; i < argc; ++i) {
@@ -379,6 +381,8 @@ int main(int argc, char* argv[]) {
             lambda_alpha_sep = std::stod(argv[++i]);
         } else if (arg == "--lambda-delta" && i + 1 < argc) {
             lambda_delta_sep = std::stod(argv[++i]);
+        } else if (arg == "--lambda-translation-prior" && i + 1 < argc) {
+            lambda_translation_prior = std::stod(argv[++i]);
         }
     }
     std::cout << "Mode: " << (optimize ? "Optimized" : "Mean Shape Only") << std::endl;
@@ -518,11 +522,11 @@ int main(int argc, char* argv[]) {
         params.optimize_rotation = false;
         params.optimize_translation = false;
     } else {
-        // Week 4/5: full or legacy — expression only, pose fixed (or warm-start from init_pose_json)
+        // Week 4/5: full or legacy — optimize expression and pose so tracking can change over time
         params.optimize_expression = optimize;
         params.optimize_identity = false;
-        params.optimize_rotation = false;
-        params.optimize_translation = false;
+        params.optimize_rotation = optimize;
+        params.optimize_translation = optimize;
     }
     
     // Scale factor from Procrustes (BFM mm -> camera meters)
@@ -561,6 +565,8 @@ int main(int argc, char* argv[]) {
                 params.scale = scale_pose;
                 pose_scale = scale_pose;
                 loaded_from_json = true;
+                params.lambda_translation_prior = lambda_translation_prior;  // Reduce drift in tracking
+                params.max_translation_delta_m = 0.3;  // Hard-bound translation change per frame
                 std::cout << "    Loaded pose: scale=" << pose_scale << ", t=[" << params.t.transpose() << "]" << std::endl;
             }
         }

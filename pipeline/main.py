@@ -805,6 +805,9 @@ class PipelineOrchestrator:
                     "smooth_pose_alpha": self.config.get("smooth_pose_alpha", 0.7),
                     "smooth_expr_alpha": self.config.get("smooth_expr_alpha", 0.7),
                     "reinit_every": self.config.get("reinit_every", 0),
+                    "drift_translation_z_thresh_m": self.config.get("drift_translation_z_thresh_m", 0.5),
+                    "drift_translation_norm_thresh_m": self.config.get("drift_translation_norm_thresh_m", 0.0),
+                    "lambda_translation_prior": self.config.get("lambda_translation_prior", 0.5),
                     "drift_rmse_thresh": self.config.get("drift_rmse_thresh", 80.0),
                     "save_overlays_3d": self.config.get("save_overlays_3d", True),
                     "save_depth_residual_vis": self.config.get("save_depth_residual_vis", True),
@@ -1044,6 +1047,12 @@ Examples:
                       help="EMA alpha for expression smoothing (default: 0.7)")
     parser.add_argument("--reinit-every", type=int, default=0,
                       help="Re-run Procrustes every K frames (0=never, default: 0)")
+    parser.add_argument("--drift-translation-z-thresh", type=float, default=0.5,
+                      help="Translation z delta (m) above which to reinit tracking (0=disable, default: 0.5)")
+    parser.add_argument("--drift-translation-norm-thresh", type=float, default=0.0,
+                      help="Translation norm delta (m) above which to reinit tracking (0=disable, default: 0)")
+    parser.add_argument("--lambda-translation-prior", type=float, default=0.5,
+                      help="Translation prior weight in tracking to reduce drift (default: 0.5; try 1.0 or 2.0 if still drifting)")
     parser.add_argument("--drift-rmse-thresh", type=float, default=80.0,
                       help="RMSE threshold (mm) for drift detection and auto re-init (default: 80.0)")
     parser.add_argument("--save-overlays-3d", action="store_true", default=True,
@@ -1125,6 +1134,9 @@ def main() -> int:
         "smooth_pose_alpha": args.smooth_pose_alpha,
         "smooth_expr_alpha": args.smooth_expr_alpha,
         "reinit_every": args.reinit_every,
+        "drift_translation_z_thresh_m": args.drift_translation_z_thresh,
+        "drift_translation_norm_thresh_m": args.drift_translation_norm_thresh,
+        "lambda_translation_prior": args.lambda_translation_prior,
         "drift_rmse_thresh": args.drift_rmse_thresh,
         "save_overlays_3d": args.save_overlays_3d,
         "save_depth_residual_vis": args.save_depth_residual_vis,

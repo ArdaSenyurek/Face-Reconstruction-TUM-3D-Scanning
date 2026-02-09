@@ -727,6 +727,15 @@ int main(int argc, char* argv[]) {
         std::cout << "\n    Optimized mesh metrics:" << std::endl;
         std::cout << "      Scale ratio: " << opt_metrics.scale_ratio << std::endl;
         std::cout << "      NN-RMSE: " << opt_metrics.nn_rmse_m * 1000.0 << " mm" << std::endl;
+        // Sanity check: warn when mesh and scan z-ranges differ (e.g. tracking drift)
+        const double z_range_mismatch_thresh_m = 0.5;
+        double mesh_z_mid = 0.5 * (opt_metrics.mesh_z_min + opt_metrics.mesh_z_max);
+        double cloud_z_mid = 0.5 * (opt_metrics.cloud_z_min + opt_metrics.cloud_z_max);
+        if (std::abs(mesh_z_mid - cloud_z_mid) > z_range_mismatch_thresh_m) {
+            std::cerr << "Warning: optimized mesh z-range differs from scan by more than "
+                      << z_range_mismatch_thresh_m << " m; nn_rmse_m may be misleading (e.g. tracking drift)."
+                      << std::endl;
+        }
     }
     
     // ========================================================================
