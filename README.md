@@ -4,7 +4,7 @@
 
 **Repository:** [https://github.com/ArdaSenyurek/Face-Reconstruction-TUM-3D-Scanning](https://github.com/ArdaSenyurek/Face-Reconstruction-TUM-3D-Scanning)
 
-This README describes what we implemented, how to install and run the project, key metrics that demonstrate we met the proposal, entry-point return values/exit codes, and where to find visualizations for the report.
+This README lists all **entrypoint files** (main pipeline, C++ tools, scripts, utils), **what each does and produces** (inputs, outputs, purpose), **dependencies and installation**, and **how to launch** the project; it does not document every internal function.
 
 **Summary of accomplishments (key metrics):**
 - **Rigid alignment (Procrustes + ICP):** Landmark alignment error reduced from ~800 mm (pre-alignment) to ~15 mm (post-ICP), ~98% improvement (see `pose_init/*_rigid_report.json`).
@@ -207,6 +207,8 @@ Built with CMake; called by the pipeline or scripts.
 | **compute_metrics.py** | Per-frame metrics: 2D landmark, depth, 3D surface error. | `--mesh`, `--depth`, `--intrinsics`, `--landmarks`, `--mapping`, `--model-dir`, `--output`; optional `--pointcloud` | JSON |
 | **aggregate_summary.py** | Aggregate week6 metrics into one CSV. | `--week6-dir` (default `outputs/week6`) | `outputs/week6/summary.csv` |
 | **analyze_sparse_alignment.py** | Analyze pose_init JSON reports. | `--reports-dir`, `--output-dir` | Summary stats, plots, CSV |
+| **alignment_and_frame_metrics.py** | Overlay metrics (rigid vs optimized) and frame-to-frame tracking deltas. | `--overlay-metrics-dir` or `--tracking-summary` | Summary stats, improvement in mm |
+| **create_upload_bundle.py** | Pack a minimal subset of `outputs/` for upload (metrics, sample PNGs/PLYs, logs). | `--output-dir`, `--inputs`, `--full-sequence` | `outputs_for_upload/` (or given path) |
 
 **Return values / exit codes:**
 - **pipeline/main.py:** Exits **0** on success, **1** on failure, **130** on Ctrl+C. Success means all requested steps completed; a step failure causes exit 1.
