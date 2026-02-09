@@ -225,7 +225,7 @@ def run_standalone(sequences: List[str] = None):
     Standalone function to generate overlays without full pipeline.
     
     Usage:
-        from pipeline.steps.week4_overlays import run_standalone
+        from pipeline.steps.overlays import run_standalone
         run_standalone(["01", "17"])
     """
     import logging

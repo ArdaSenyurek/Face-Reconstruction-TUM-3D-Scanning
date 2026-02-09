@@ -612,7 +612,7 @@ class PipelineOrchestrator:
             PoseInitStep,
             ReconstructionStep,
         )
-        from pipeline.steps.week4_overlays import Week4OverlayStep
+        from pipeline.steps.overlays import Week4OverlayStep
         from pipeline.steps.preflight import PreflightStep
         from pipeline.steps.tracking import TrackingStep
         
@@ -947,13 +947,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
         epilog="""
 Examples:
   # Full pipeline with all steps (analysis enabled by default)
-  python scripts/pipeline.py --sequence 01 --frames 5
+  python pipeline/main.py --frames 5
 
   # Download and run full pipeline
-  python scripts/pipeline.py --download --sequence 01 --frames 5
+  python pipeline/main.py --download --frames 5
 
   # Disable analysis (skip point clouds, metrics, visualizations)
-  python scripts/pipeline.py --no-analysis
+  python pipeline/main.py --no-analysis
         """
     )
     
@@ -1134,7 +1134,7 @@ def main() -> int:
     # Week 6: Run evaluation script and exit (no full pipeline)
     if config.get("week6_eval"):
         import subprocess
-        script = Path(__file__).parent.parent / "scripts" / "run_week6_eval.py"
+        script = Path(__file__).parent.parent / "scripts" / "run_eval.py"
         if not script.exists():
             logger.error(f"Week 6 script not found: {script}")
             return 1

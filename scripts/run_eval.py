@@ -69,7 +69,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--no-overlays", dest="overlays", action="store_false",
                    help="Skip 3D overlay export")
     p.add_argument("--aggregate", action="store_true", default=True,
-                   help="Run aggregate_week6_summary to produce summary.csv; default: on")
+                   help="Run aggregate_summary to produce summary.csv; default: on")
     p.add_argument("--no-aggregate", dest="aggregate", action="store_false",
                    help="Skip summary.csv aggregation")
     return p.parse_args()
@@ -95,7 +95,7 @@ def run_metrics_for_frame(
     seq_dir: Path,
     landmarks_file: Path,
 ) -> Optional[Dict[str, Any]]:
-    """Run compute_week6_metrics.py for one frame; return metrics dict or None."""
+    """Run compute_metrics.py for one frame; return metrics dict or None."""
     if not mesh_ply.exists():
         return None
     depth = seq_dir / "depth" / f"{frame_name}.png"
@@ -105,7 +105,7 @@ def run_metrics_for_frame(
     pointcloud = seq_dir / "pointclouds" / f"{frame_name}.ply"
     cmd = [
         sys.executable,
-        str(REPO_ROOT / "scripts" / "compute_week6_metrics.py"),
+        str(REPO_ROOT / "scripts" / "compute_metrics.py"),
         "--mesh", str(mesh_ply),
         "--depth", str(depth),
         "--intrinsics", str(intrinsics),
@@ -136,7 +136,7 @@ def run_visuals_for_frame(
     mesh_ply: Path,
     seq_dir: Path,
 ) -> bool:
-    """Run generate_week6_visuals.py for one frame."""
+    """Run generate_visuals.py for one frame."""
     if not mesh_ply.exists():
         return False
     depth = seq_dir / "depth" / f"{frame_name}.png"
@@ -146,7 +146,7 @@ def run_visuals_for_frame(
     out_dir.mkdir(parents=True, exist_ok=True)
     cmd = [
         sys.executable,
-        str(REPO_ROOT / "scripts" / "generate_week6_visuals.py"),
+        str(REPO_ROOT / "scripts" / "generate_visuals.py"),
         "--seq", seq,
         "--frame", frame_name.replace("frame_", ""),
         "--mesh", str(mesh_ply),
@@ -460,7 +460,7 @@ def main() -> int:
             run_stage3(args, seq, seq_dir, week6_base)
 
     if args.aggregate:
-        agg_script = REPO_ROOT / "scripts" / "aggregate_week6_summary.py"
+        agg_script = REPO_ROOT / "scripts" / "aggregate_summary.py"
         if agg_script.exists():
             cmd = [sys.executable, str(agg_script), "--week6-dir", str(week6_base)]
             subprocess.run(cmd, capture_output=True, timeout=30)
