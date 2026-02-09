@@ -1,6 +1,11 @@
 """
 Analysis step: Compute metrics, visualizations, and statistics.
 Calls C++ analysis binary for all 3D computation.
+
+Metrics units:
+- depth_min, depth_max, depth_mean, depth_std: meters (from C++ analysis binary).
+- rmse_cloud_mesh_m: meters.
+- runtime_seconds: seconds.
 """
 
 import json
@@ -69,6 +74,7 @@ class AnalysisStep(PipelineStep):
                     analysis_binary = Path(self.config.get("analysis_binary", "build/bin/analysis"))
                     if analysis_binary.exists():
                         metrics_result = self._run_analysis(analysis_binary, None, None, depth_frame, vis_out, None)
+                        # Depth stats are in meters (C++ analysis uses depth scale 1000 -> meters)
                         entry.update({
                             "depth_min": metrics_result.get("depth_min", 0.0),
                             "depth_max": metrics_result.get("depth_max", 0.0),
@@ -77,9 +83,21 @@ class AnalysisStep(PipelineStep):
                         })
                 
                 # Cloud-to-mesh RMSE (computed by C++ binary)
-                if save_metrics:
+                if save_metrics and mesh_path.exists():
                     pc_out = analysis_root / "pointclouds" / seq_name / f"{frame_stem}.ply"
-                    if pc_out.exists() and mesh_path.exists():
+                    if not pc_out.exists() and depth_frame.exists() and intrinsics_path.exists():
+                        # Option B: generate pointcloud from depth so we can compute RMSE in tracking mode
+                        try:
+                            from pipeline.utils.create_pointcloud_from_rgbd import create_pointcloud_from_rgbd
+                            pc_out.parent.mkdir(parents=True, exist_ok=True)
+                            if create_pointcloud_from_rgbd(
+                                depth_frame, depth_frame, intrinsics_path, pc_out,
+                                depth_scale=1000.0
+                            ):
+                                pass  # pc_out now exists
+                        except Exception as e:
+                            self.logger.debug(f"Could not create pointcloud from depth for {seq_name}/{frame_stem}: {e}")
+                    if pc_out.exists():
                         analysis_binary = Path(self.config.get("analysis_binary", "build/bin/analysis"))
                         if analysis_binary.exists():
                             metrics_result = self._run_analysis(analysis_binary, pc_out, mesh_path, None, None, None)
@@ -111,7 +129,7 @@ class AnalysisStep(PipelineStep):
             except Exception as e:
                 self.logger.warning(f"Analysis failed for {seq_name} {frame_name}: {e}")
         
-        # Save metrics
+        # Save metrics (depth_* and rmse_cloud_mesh_m are in meters; see module docstring)
         if metrics:
             metrics_path = analysis_root / "metrics.json"
             metrics_path.parent.mkdir(parents=True, exist_ok=True)

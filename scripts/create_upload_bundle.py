@@ -7,6 +7,10 @@ Rule:
   - All other sequences: first frame only (frame_00000).
 
 Preserves the same directory structure; omits pointclouds and runtime_meshes to keep size small.
+
+With --optimized-only: meshes *_optimized.ply, metrics.json, overlay_checks.json, and all other
+outputs (images, depth visuals, pose_init, overlays, logs). Only tracking data is excluded:
+no tracking_summary_*.json/csv and no tracking/state.
 """
 
 import argparse
@@ -82,6 +86,11 @@ def main() -> None:
         default="01",
         help="Sequence ID that gets every frame (default: 01); others get first frame only",
     )
+    parser.add_argument(
+        "--optimized-only",
+        action="store_true",
+        help="Bundle only optimized (non-tracked) outputs: meshes *_optimized.ply, skip tracking summaries and tracking/state",
+    )
     args = parser.parse_args()
 
     src = args.inputs.resolve()
@@ -105,22 +114,27 @@ def main() -> None:
             seq_frames[seq_id] = frames
 
     count = 0
+    optimized_only = getattr(args, "optimized_only", False)
 
-    # analysis/
+    # analysis/: metrics.json, overlay_checks.json; depth residual/vis; tracking_summary only when not optimized_only
     analysis_src = src / "analysis"
     analysis_dst = dst / "analysis"
     if analysis_src.exists():
-        for f in ["metrics.json", "tracking_summary_01.json", "tracking_summary_01.csv"]:
-            if (src / "analysis" / f).exists():
-                if copy_file(analysis_src / f, analysis_dst / f):
-                    count += 1
-        for seq_id, frames in seq_frames.items():
-            # tracking_summary_<seq>.json / .csv
-            for ext in [".json", ".csv"]:
-                f = f"tracking_summary_{seq_id}{ext}"
+        for f in ["metrics.json", "overlay_checks.json"]:
+            if copy_file(analysis_src / f, analysis_dst / f):
+                count += 1
+        if not optimized_only:
+            for f in ["tracking_summary_01.json", "tracking_summary_01.csv"]:
                 if (analysis_src / f).exists():
                     if copy_file(analysis_src / f, analysis_dst / f):
                         count += 1
+        for seq_id, frames in seq_frames.items():
+            if not optimized_only:
+                for ext in [".json", ".csv"]:
+                    f = f"tracking_summary_{seq_id}{ext}"
+                    if (analysis_src / f).exists():
+                        if copy_file(analysis_src / f, analysis_dst / f):
+                            count += 1
             # depth_residual_vis/<seq>/<frame>_residual.png
             res_dir = analysis_src / "depth_residual_vis" / seq_id
             if res_dir.exists():
@@ -179,20 +193,26 @@ def main() -> None:
                     if copy_file(pose_src / seq_id / name, pose_dst / seq_id / name):
                         count += 1
 
-    # meshes/<seq>/: tracked or optimized PLY per frame
+    # meshes/<seq>/: optimized or tracked PLY per frame (with --optimized-only only *_optimized.ply)
     mesh_src = src / "meshes"
     mesh_dst = dst / "meshes"
     if mesh_src.exists():
         for seq_id, frames in seq_frames.items():
             for frame_stem in frames:
-                for suffix in ["_tracked.ply", "_optimized.ply"]:
-                    if copy_file(mesh_src / seq_id / f"{frame_stem}{suffix}", mesh_dst / seq_id / f"{frame_stem}{suffix}"):
+                if optimized_only:
+                    for suffix in ["_optimized.ply"]:
+                        if copy_file(mesh_src / seq_id / f"{frame_stem}{suffix}", mesh_dst / seq_id / f"{frame_stem}{suffix}"):
+                            count += 1
+                    if copy_file(mesh_src / seq_id / f"{frame_stem}.ply", mesh_dst / seq_id / f"{frame_stem}.ply"):
                         count += 1
-                # fallback: frame_00000.ply etc.
-                if copy_file(mesh_src / seq_id / f"{frame_stem}.ply", mesh_dst / seq_id / f"{frame_stem}.ply"):
-                    count += 1
+                else:
+                    for suffix in ["_tracked.ply", "_optimized.ply"]:
+                        if copy_file(mesh_src / seq_id / f"{frame_stem}{suffix}", mesh_dst / seq_id / f"{frame_stem}{suffix}"):
+                            count += 1
+                    if copy_file(mesh_src / seq_id / f"{frame_stem}.ply", mesh_dst / seq_id / f"{frame_stem}.ply"):
+                        count += 1
 
-    # overlays_3d/<seq>/: overlay_metrics.json for each frame; overlay PLYs/scan/mesh: every frame for full_sequence, first only for others
+    # overlays_3d/<seq>/: overlay_metrics.json and overlay PLYs/scan/mesh
     ov3_src = src / "overlays_3d"
     ov3_dst = dst / "overlays_3d"
     if ov3_src.exists():
@@ -200,7 +220,6 @@ def main() -> None:
             for frame_stem in frames:
                 if copy_file(ov3_src / seq_id / f"{frame_stem}_overlay_metrics.json", ov3_dst / seq_id / f"{frame_stem}_overlay_metrics.json"):
                     count += 1
-            # overlay PLYs and scan/mesh: all frames for full_sequence (01), first frame only for others
             for frame_stem in frames:
                 for name in [f"{frame_stem}_overlay_rigid.ply", f"{frame_stem}_overlay_opt.ply", f"{frame_stem}_scan.ply", f"{frame_stem}_mesh.ply"]:
                     if copy_file(ov3_src / seq_id / name, ov3_dst / seq_id / name):
@@ -222,15 +241,16 @@ def main() -> None:
                         count += 1
                     break
 
-    # tracking/state/<seq>/: init + final JSON per frame
-    track_src = src / "tracking" / "state"
-    track_dst = dst / "tracking" / "state"
-    if track_src.exists():
-        for seq_id, frames in seq_frames.items():
-            for frame_stem in frames:
-                for suffix in ["_init.json", "_final.json"]:
-                    if copy_file(track_src / seq_id / f"{frame_stem}{suffix}", track_dst / seq_id / f"{frame_stem}{suffix}"):
-                        count += 1
+    # tracking/state/<seq>/: init + final JSON per frame (skipped with --optimized-only)
+    if not optimized_only:
+        track_src = src / "tracking" / "state"
+        track_dst = dst / "tracking" / "state"
+        if track_src.exists():
+            for seq_id, frames in seq_frames.items():
+                for frame_stem in frames:
+                    for suffix in ["_init.json", "_final.json"]:
+                        if copy_file(track_src / seq_id / f"{frame_stem}{suffix}", track_dst / seq_id / f"{frame_stem}{suffix}"):
+                            count += 1
 
     # logs/
     logs_src = src / "logs"
@@ -239,7 +259,6 @@ def main() -> None:
         for f in ["pipeline_summary.json", "conversion_reports.json"]:
             if copy_file(logs_src / f, logs_dst / f):
                 count += 1
-        # most recent pipeline log
         logs = sorted(logs_src.glob("pipeline_*.log"), key=lambda p: p.stat().st_mtime, reverse=True)
         if logs:
             if copy_file(logs[0], logs_dst / logs[0].name):
@@ -248,21 +267,28 @@ def main() -> None:
     # README in bundle
     readme = dst / "README.txt"
     readme.parent.mkdir(parents=True, exist_ok=True)
+    mode_note = " (optimized-only: meshes *_optimized.ply; no tracking summaries or tracking/state)" if optimized_only else ""
     readme.write_text(
         "Minimal outputs bundle for upload (e.g. Google Drive)\n"
         "====================================================\n\n"
-        f"Rule: sequence {args.full_sequence} = every frame; all other sequences = first frame only.\n\n"
+        f"Rule: sequence {args.full_sequence} = every frame; all other sequences = first frame only.{mode_note}\n\n"
         "Generated by:\n"
-        "  python scripts/create_upload_bundle.py\n\n"
-        "Contents: analysis (metrics, tracking summaries, depth residual/vis), converted (rgb, depth, intrinsics),\n"
-        "landmarks, pose_init, meshes, overlays_3d, overlays, tracking/state, logs.\n"
+        "  python scripts/create_upload_bundle.py"
+        + (" --optimized-only" if optimized_only else "") + "\n\n"
+        "Contents: analysis (metrics.json, overlay_checks.json"
+        + (", depth residual/vis)" if optimized_only else ", tracking summaries, depth residual/vis)")
+        + ", converted (rgb, depth, intrinsics), landmarks, pose_init, meshes"
+        + (" (*_optimized.ply only)" if optimized_only else "")
+        + ", overlays_3d, overlays"
+        + (", logs. No tracking data." if optimized_only else ", tracking/state, logs.")
+        + "\n"
         "Omitted: pointclouds, runtime_meshes.\n\n"
         "Repository: https://github.com/ArdaSenyurek/Face-Reconstruction-TUM-3D-Scanning\n",
         encoding="utf-8",
     )
     count += 1
 
-    print(f"Created {dst} with {count} files.")
+    print(f"Created {dst} with {count} files." + (" (optimized-only)" if optimized_only else ""))
     print(f"Sequences: {list(seq_frames.keys())}")
     for seq_id, frames in seq_frames.items():
         print(f"  {seq_id}: {len(frames)} frame(s)" + (" (all)" if seq_id == args.full_sequence else " (first only)"))

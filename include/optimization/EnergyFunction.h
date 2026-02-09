@@ -56,6 +56,14 @@ public:
         const cv::Mat& observed_depth) const;
     
     /**
+     * Count valid depth residual terms (same sampling as computeDepthEnergy).
+     * Used to report per-pixel depth RMSE.
+     */
+    int computeDepthValidCount(
+        const OptimizationParams& params,
+        const cv::Mat& observed_depth) const;
+    
+    /**
      * Compute regularization energy: E_reg = lambda_a*||alpha/sigma_a||^2 + lambda_d*||delta/sigma_d||^2
      * 
      * @param params Current optimization parameters

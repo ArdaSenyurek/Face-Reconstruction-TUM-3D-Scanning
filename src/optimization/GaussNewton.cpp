@@ -186,23 +186,36 @@ OptimizationResult GaussNewtonOptimizer::optimize(
             step *= 0.5;
         }
         
-        // Update parameters
-        params = best_params;
         // Translation clipping: hard-bound drift when prior is used
-        if (params.lambda_translation_prior > 0 && params.max_translation_delta_m > 0) {
-            double md = params.max_translation_delta_m;
+        OptimizationParams candidate_params = best_params;
+        if (candidate_params.lambda_translation_prior > 0 && candidate_params.max_translation_delta_m > 0) {
+            double md = candidate_params.max_translation_delta_m;
             for (int i = 0; i < 3; ++i) {
-                params.t(i) = std::max(t_prior_(i) - md, std::min(t_prior_(i) + md, params.t(i)));
+                candidate_params.t(i) = std::max(t_prior_(i) - md, std::min(t_prior_(i) + md, candidate_params.t(i)));
             }
         }
+        // Reject step if mesh Z would go out of range [0.5, 1.5] m (keep previous params)
+        Eigen::MatrixXd verts = energy_func_.getTransformedVertices(candidate_params);
+        if (verts.rows() > 0) {
+            double z_min = verts.col(2).minCoeff();
+            double z_max = verts.col(2).maxCoeff();
+            if (z_min < z_min_m || z_max > z_max_m) {
+                if (verbose_) {
+                    std::cout << "Early stop: rejecting step (mesh Z [" << z_min << ", " << z_max
+                              << "] outside [" << z_min_m << ", " << z_max_m << "] m); keeping previous pose at iteration "
+                              << iter + 1 << std::endl;
+                }
+                result.converged = true;
+                break;
+            }
+        }
+        params = candidate_params;
         result.energy_history.push_back(best_energy);
         result.step_norms.push_back((delta * step).norm());
-        
         // Compute per-term energies for logging
         double lm_energy = energy_func_.computeLandmarkEnergy(params, landmarks, mapping);
         double depth_energy = energy_func_.computeDepthEnergy(params, observed_depth);
         double reg_energy = energy_func_.computeRegularization(params);
-        
         // Week 6: Early stop if depth term not improving (2 consecutive increases)
         if (depth_energy > prev_depth_energy) {
             depth_not_improving_count++;
@@ -217,22 +230,6 @@ OptimizationResult GaussNewtonOptimizer::optimize(
             depth_not_improving_count = 0;
         }
         prev_depth_energy = depth_energy;
-        
-        // Week 6: Early stop if mesh Z out of range [0.5, 1.5] m
-        Eigen::MatrixXd verts = energy_func_.getTransformedVertices(params);
-        if (verts.rows() > 0) {
-            double z_min = verts.col(2).minCoeff();
-            double z_max = verts.col(2).maxCoeff();
-            if (z_min < z_min_m || z_max > z_max_m) {
-                if (verbose_) {
-                    std::cout << "Early stop: mesh Z range [" << z_min << ", " << z_max
-                              << "] outside [" << z_min_m << ", " << z_max_m << "] m at iteration "
-                              << iter + 1 << std::endl;
-                }
-                result.converged = true;
-                break;
-            }
-        }
         
         if (verbose_ || iter < 10 || iter % 5 == 0) {
             std::cout << "Iter " << std::setw(3) << iter + 1 << ": "
@@ -266,6 +263,7 @@ OptimizationResult GaussNewtonOptimizer::optimize(
     result.landmark_energy = energy_func_.computeLandmarkEnergy(
         params, landmarks, mapping);
     result.depth_energy = energy_func_.computeDepthEnergy(params, observed_depth);
+    result.depth_valid_count = energy_func_.computeDepthValidCount(params, observed_depth);
     result.regularization_energy = energy_func_.computeRegularization(params);
     result.damping_used = damping_;
     if (!result.step_norms.empty()) {

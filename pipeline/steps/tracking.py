@@ -37,6 +37,7 @@ class TrackingState:
     reinit_count: int = 0
     last_rmse_mm: float = 0.0  # Actually optimization final_energy when from C++; not geometric RMSE in mm
     final_energy: float = 0.0   # Optimization total energy (same as last_rmse_mm from C++)
+    depth_rmse_mm: float = -1.0  # Per-pixel depth RMSE in mm (from C++; -1 if not set)
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for JSON serialization."""
@@ -70,9 +71,11 @@ class FrameMetrics:
     sequence: str
     
     # Alignment quality
-    landmark_rmse_mm: float = 0.0   # Not computed in tracking (always 0); use pose_init reports for landmark RMSE
-    face_nn_rmse_mm: float = 0.0   # From state: optimization final_energy (not geometric RMSE in mm)
-    final_energy: float = 0.0       # Optimization total energy; use overlay/analysis for geometric mesh-scan RMSE
+    landmark_rmse_mm: float = 0.0   # 3D landmark error in mm (optional; use pose_init for rigid)
+    landmark_reprojection_rmse_px: float = -1.0  # 2D reprojection RMSE in pixels (-1 if not computed)
+    optimization_energy: float = 0.0  # Optimization total energy (from C++ final_energy); not geometric RMSE
+    final_energy: float = 0.0       # Same as optimization_energy; use overlay/analysis for geometric mesh-scan RMSE
+    depth_rmse_mm: float = -1.0     # Per-pixel depth RMSE in mm (from C++; -1 if not available)
     
     # Pose parameters
     translation_x: float = 0.0
@@ -340,7 +343,7 @@ class TrackingStep(PipelineStep):
                     new_state = self._apply_temporal_smoothing(state, new_state)
                 
                 state = new_state
-                state.last_rmse_mm = metrics.face_nn_rmse_mm
+                state.last_rmse_mm = metrics.optimization_energy
                 state.final_energy = metrics.final_energy
             
             # Generate overlays if enabled
@@ -351,7 +354,7 @@ class TrackingStep(PipelineStep):
             if self.config.get("save_depth_residual_vis", True):
                 self._generate_depth_residual_vis(seq_id, frame_name, depth_path, intrinsics_path)
             
-            self.logger.info(f"    Final energy: {metrics.final_energy:.2f} (face_nn_rmse_mm field = energy, not geometric RMSE)")
+            self.logger.info(f"    Final energy: {metrics.final_energy:.2f}")
         
         return metrics_list
     
@@ -369,6 +372,26 @@ class TrackingStep(PipelineStep):
         if reinit_every > 0 and frame_idx > 0 and frame_idx % reinit_every == 0:
             self.logger.info(f"    Triggering periodic re-init (every {reinit_every} frames)")
             return True
+        
+        # Z-range check: reinit if previous pose is outside plausible depth range (e.g. mesh drifted)
+        if frame_idx >= 1 and state is not None:
+            z_min = self.config.get("drift_z_range_min_m", 0.5)
+            z_max = self.config.get("drift_z_range_max_m", 1.5)
+            tz = state.translation[2] if len(state.translation) > 2 else 0.0
+            if z_max > z_min and (tz < z_min or tz > z_max):
+                self.logger.info(
+                    f"    Triggering re-init: translation_z {tz:.3f} m outside [{z_min}, {z_max}] m"
+                )
+                return True
+            # Reinit when per-pixel depth RMSE is too high (poor fit)
+            depth_rmse_thresh = self.config.get("drift_depth_rmse_thresh_mm", 0.0)
+            if depth_rmse_thresh > 0:
+                depth_rmse = getattr(state, "depth_rmse_mm", -1.0)
+                if depth_rmse >= 0 and depth_rmse >= depth_rmse_thresh:
+                    self.logger.info(
+                        f"    Triggering re-init: depth_rmse_mm {depth_rmse:.1f} >= {depth_rmse_thresh} mm"
+                    )
+                    return True
         
         # Translation-delta drift detection (when config is set)
         if frame_idx >= 2 and seq_id and prev_prev_frame_name:
@@ -395,9 +418,6 @@ class TrackingStep(PipelineStep):
                     except Exception as e:
                         self.logger.debug(f"Could not load prev-prev state for drift check: {e}")
         
-        # Note: Drift detection based on RMSE threshold is disabled because
-        # the current implementation stores optimization energy, not actual RMSE.
-        # To enable drift detection, compute actual mesh-scan RMSE in _compute_frame_metrics.
         return False
     
     def _init_from_procrustes(
@@ -520,6 +540,7 @@ class TrackingStep(PipelineStep):
             "--lambda-depth", str(self.config.get("lambda_depth", 0.1)),
             "--lambda-reg", str(self.config.get("lambda_reg", 10.0)),
             "--lambda-translation-prior", str(self.config.get("lambda_translation_prior", 0.5)),
+            "--max-translation-delta-m", str(self.config.get("max_translation_delta_m", 0.1)),
         ]
         
         if self.config.get("optimize", False):
@@ -542,14 +563,16 @@ class TrackingStep(PipelineStep):
                 self.logger.warning(f"Reconstruction failed: {result.stderr[:500]}")
                 return None
             
-            # Compute metrics
+            # Compute metrics (pass landmarks/intrinsics for optional landmark reprojection RMSE)
             metrics = self._compute_frame_metrics(
                 seq_id,
                 frame_name,
                 init_state.frame_idx,
                 output_mesh,
                 final_state_path,
-                was_reinit
+                was_reinit,
+                landmarks_path=landmarks_path,
+                intrinsics_path=intrinsics_path,
             )
             
             return metrics
@@ -561,6 +584,71 @@ class TrackingStep(PipelineStep):
             self.logger.warning(f"Reconstruction error: {e}")
             return None
     
+    def _compute_landmark_reprojection_rmse(
+        self,
+        mesh_path: Path,
+        landmarks_path: Path,
+        intrinsics_path: Path,
+    ) -> float:
+        """Compute 2D landmark reprojection RMSE in pixels. Returns -1 if not available."""
+        mapping_path = Path(self.config.get("landmark_mapping", "data/bfm_landmark_68.txt"))
+        if not mesh_path.exists() or not landmarks_path.exists() or not intrinsics_path.exists() or not mapping_path.exists():
+            return -1.0
+        try:
+            verts = self._load_ply_vertices(mesh_path)
+            if len(verts) == 0:
+                return -1.0
+            # Load landmarks (x y per line)
+            lm_2d = []
+            with open(landmarks_path, "r") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line or line.startswith("#"):
+                        continue
+                    parts = line.split()
+                    if len(parts) >= 2:
+                        lm_2d.append([float(parts[0]), float(parts[1])])
+            if not lm_2d:
+                return -1.0
+            lm_2d = np.array(lm_2d)
+            # Load mapping: line i -> vertex index for landmark i
+            vertex_indices = []
+            with open(mapping_path, "r") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line or line.startswith("#"):
+                        continue
+                    parts = line.split()
+                    if len(parts) >= 2:
+                        vertex_indices.append(int(parts[1]))
+            if not vertex_indices or len(vertex_indices) > len(verts):
+                return -1.0
+            # Intrinsics
+            with open(intrinsics_path, "r") as f:
+                parts = f.read().strip().split()
+            if len(parts) < 4:
+                return -1.0
+            fx, fy, cx, cy = float(parts[0]), float(parts[1]), float(parts[2]), float(parts[3])
+            n = min(len(vertex_indices), len(lm_2d))
+            errors = []
+            for i in range(n):
+                vi = vertex_indices[i]
+                if vi < 0 or vi >= len(verts):
+                    continue
+                p = verts[vi]
+                if p[2] <= 0:
+                    continue
+                u = fx * p[0] / p[2] + cx
+                v = fy * p[1] / p[2] + cy
+                d = np.sqrt((u - lm_2d[i, 0]) ** 2 + (v - lm_2d[i, 1]) ** 2)
+                errors.append(d)
+            if not errors:
+                return -1.0
+            return float(np.sqrt(np.mean(np.array(errors) ** 2)))
+        except Exception as e:
+            self.logger.debug(f"Landmark reprojection RMSE failed: {e}")
+            return -1.0
+
     def _compute_frame_metrics(
         self,
         seq_id: str,
@@ -568,7 +656,10 @@ class TrackingStep(PipelineStep):
         frame_idx: int,
         mesh_path: Path,
         state_path: Path,
-        was_reinit: bool
+        was_reinit: bool,
+        *,
+        landmarks_path: Optional[Path] = None,
+        intrinsics_path: Optional[Path] = None,
     ) -> FrameMetrics:
         """Compute metrics for a frame."""
         metrics = FrameMetrics(
@@ -577,7 +668,10 @@ class TrackingStep(PipelineStep):
             sequence=seq_id,
             was_reinit=was_reinit
         )
-        
+        if landmarks_path is not None and intrinsics_path is not None:
+            metrics.landmark_reprojection_rmse_px = self._compute_landmark_reprojection_rmse(
+                mesh_path, landmarks_path, intrinsics_path
+            )
         # Load final state if available
         if state_path.exists():
             try:
@@ -596,9 +690,14 @@ class TrackingStep(PipelineStep):
                 if state.expression:
                     metrics.expression_norm = np.linalg.norm(state.expression)
                 
-                # Optimization energy (C++ writes as last_rmse_mm and final_energy; not geometric RMSE in mm)
-                metrics.final_energy = getattr(state, "final_energy", None) or state.last_rmse_mm
-                metrics.face_nn_rmse_mm = state.last_rmse_mm
+                # Optimization energy (C++ state: final_energy; legacy last_rmse_mm is same value)
+                energy_val = getattr(state, "final_energy", None) or state.last_rmse_mm
+                metrics.final_energy = energy_val
+                metrics.optimization_energy = energy_val
+                # Per-pixel depth RMSE in mm (from C++ state when available)
+                metrics.depth_rmse_mm = getattr(state, "depth_rmse_mm", -1.0)
+                if metrics.depth_rmse_mm < 0:
+                    metrics.depth_rmse_mm = -1.0
             except Exception as e:
                 self.logger.warning(f"Error loading state: {e}")
         
@@ -820,9 +919,9 @@ class TrackingStep(PipelineStep):
                 "num_frames": len(seq_metrics),
                 "frames": [m.to_dict() for m in seq_metrics],
                 "summary": {
-                    "mean_rmse_mm": np.mean([m.face_nn_rmse_mm for m in seq_metrics]),
-                    "std_rmse_mm": np.std([m.face_nn_rmse_mm for m in seq_metrics]),
                     "mean_final_energy": float(np.mean([m.final_energy for m in seq_metrics])),
+                    "std_final_energy": float(np.std([m.final_energy for m in seq_metrics])),
+                    "mean_depth_rmse_mm": float(np.mean([m.depth_rmse_mm for m in seq_metrics if m.depth_rmse_mm >= 0])) if any(m.depth_rmse_mm >= 0 for m in seq_metrics) else None,
                     "reinit_count": sum(1 for m in seq_metrics if m.was_reinit),
                 }
             }
@@ -836,7 +935,7 @@ class TrackingStep(PipelineStep):
             with open(csv_path, 'w', newline='') as f:
                 writer = csv.DictWriter(f, fieldnames=[
                     "frame_idx", "frame_name", "sequence",
-                    "landmark_rmse_mm", "face_nn_rmse_mm", "final_energy",
+                    "landmark_rmse_mm", "landmark_reprojection_rmse_px", "optimization_energy", "final_energy", "depth_rmse_mm",
                     "translation_x", "translation_y", "translation_z",
                     "rotation_angle_deg", "scale", "expression_norm",
                     "was_reinit", "optimization_converged"

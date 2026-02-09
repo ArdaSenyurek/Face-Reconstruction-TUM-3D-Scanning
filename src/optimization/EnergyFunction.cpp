@@ -165,6 +165,27 @@ double EnergyFunction::computeDepthEnergy(
     return energy;
 }
 
+int EnergyFunction::computeDepthValidCount(
+    const OptimizationParams& params,
+    const cv::Mat& observed_depth) const {
+    if (!initialized_ || !model_) return 0;
+    if (observed_depth.empty()) return 0;
+    Eigen::MatrixXd vertices = reconstructMesh(params);
+    if (vertices.rows() == 0) return 0;
+    Eigen::MatrixXd transformed = applyPose(vertices, params);
+    cv::Mat rendered = renderDepth(transformed);
+    int count = 0;
+    for (int v = 0; v < image_height_; v += depth_sample_step_) {
+        for (int u = 0; u < image_width_; u += depth_sample_step_) {
+            float obs_d = observed_depth.at<float>(v, u);
+            float rend_d = rendered.at<float>(v, u);
+            if (obs_d > 0 && rend_d > 0 && !std::isnan(obs_d) && !std::isnan(rend_d))
+                count++;
+        }
+    }
+    return count;
+}
+
 double EnergyFunction::computeRegularization(const OptimizationParams& params) const {
     if (!initialized_ || !model_) return 0.0;
     

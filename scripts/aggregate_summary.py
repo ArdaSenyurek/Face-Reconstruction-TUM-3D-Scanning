@@ -6,7 +6,7 @@ Reads metrics.json and convergence.json per sequence and produces:
   outputs/week6/summary.csv
 
 Usage:
-  python scripts/aggregate_week6_summary.py [--week6-dir outputs/week6]
+  python scripts/aggregate_summary.py [--week6-dir outputs/week6]
 """
 
 from __future__ import annotations

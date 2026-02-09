@@ -763,8 +763,8 @@ class PipelineOrchestrator:
                 "overlay_binary": self.config.get("overlay_binary", Path("build/bin/create_overlays")),
                 "pose_init_reports": self.state.get("pose_init_reports", []),
                 "conversion_reports": self.state.get("conversion_reports", []),
-                "overlays_3d_root": self.config["output_root"] / "overlays3d",
-                "overlays_2d_root": self.config["output_root"] / "overlays2d",
+                "overlays_3d_root": self.config["output_root"] / "overlays_3d",
+                "overlays_2d_root": self.config["output_root"] / "overlays_2d",
                 "depth_overlay_root": self.config["output_root"] / "depth_overlay",
                 "target_sequences": self.config.get("target_sequences", ["01", "17"]),
             })
@@ -808,7 +808,11 @@ class PipelineOrchestrator:
                     "drift_translation_z_thresh_m": self.config.get("drift_translation_z_thresh_m", 0.5),
                     "drift_translation_norm_thresh_m": self.config.get("drift_translation_norm_thresh_m", 0.0),
                     "lambda_translation_prior": self.config.get("lambda_translation_prior", 0.5),
+                    "max_translation_delta_m": self.config.get("max_translation_delta_m", 0.1),
                     "drift_rmse_thresh": self.config.get("drift_rmse_thresh", 80.0),
+                    "drift_z_range_min_m": self.config.get("drift_z_range_min_m", 0.5),
+                    "drift_z_range_max_m": self.config.get("drift_z_range_max_m", 1.5),
+                    "drift_depth_rmse_thresh_mm": self.config.get("drift_depth_rmse_thresh_mm", 0.0),
                     "save_overlays_3d": self.config.get("save_overlays_3d", True),
                     "save_depth_residual_vis": self.config.get("save_depth_residual_vis", True),
                 })
@@ -1053,8 +1057,16 @@ Examples:
                       help="Translation norm delta (m) above which to reinit tracking (0=disable, default: 0)")
     parser.add_argument("--lambda-translation-prior", type=float, default=0.5,
                       help="Translation prior weight in tracking to reduce drift (default: 0.5; try 1.0 or 2.0 if still drifting)")
+    parser.add_argument("--max-translation-delta", type=float, default=0.1,
+                      help="Max translation change per frame in meters (default: 0.1; 0=no clip)")
     parser.add_argument("--drift-rmse-thresh", type=float, default=80.0,
                       help="RMSE threshold (mm) for drift detection and auto re-init (default: 80.0)")
+    parser.add_argument("--drift-z-range-min", type=float, default=0.5,
+                      help="Min plausible translation Z (m); reinit if previous pose Z below this (default: 0.5)")
+    parser.add_argument("--drift-z-range-max", type=float, default=1.5,
+                      help="Max plausible translation Z (m); reinit if previous pose Z above this (default: 1.5)")
+    parser.add_argument("--drift-depth-rmse-thresh", type=float, default=0.0,
+                      help="Reinit when per-pixel depth RMSE (mm) exceeds this (0=disable, default: 0)")
     parser.add_argument("--save-overlays-3d", action="store_true", default=True,
                       help="Save per-frame 3D overlay PLY files (default: True)")
     parser.add_argument("--save-depth-residual-vis", action="store_true", default=True,
@@ -1137,7 +1149,11 @@ def main() -> int:
         "drift_translation_z_thresh_m": args.drift_translation_z_thresh,
         "drift_translation_norm_thresh_m": args.drift_translation_norm_thresh,
         "lambda_translation_prior": args.lambda_translation_prior,
+        "max_translation_delta_m": args.max_translation_delta,
         "drift_rmse_thresh": args.drift_rmse_thresh,
+        "drift_z_range_min_m": args.drift_z_range_min,
+        "drift_z_range_max_m": args.drift_z_range_max,
+        "drift_depth_rmse_thresh_mm": args.drift_depth_rmse_thresh,
         "save_overlays_3d": args.save_overlays_3d,
         "save_depth_residual_vis": args.save_depth_residual_vis,
         "week6_eval": getattr(args, "week6_eval", False),

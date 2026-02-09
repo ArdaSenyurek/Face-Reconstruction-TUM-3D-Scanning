@@ -32,6 +32,7 @@
 #include "optimization/Parameters.h"
 #include "optimization/EnergyFunction.h"
 #include "optimization/GaussNewton.h"
+#include <cmath>
 #include <iostream>
 #include <string>
 #include <vector>
@@ -212,14 +213,16 @@ bool loadTrackingStateJSON(const std::string& filepath,
 
 /**
  * Week 5/6: Save tracking state to JSON (with optional identity/alpha for Stage 1 handoff)
+ * depth_rmse_mm: per-pixel depth RMSE in mm (if >= 0, written to JSON for diagnostics).
  */
 bool saveTrackingStateJSON(const std::string& filepath,
                            const Eigen::Matrix3d& R,
                            const Eigen::Vector3d& t,
                            double scale,
                            const Eigen::VectorXd& expression,
-                           double last_rmse_mm = 0.0,
-                           const Eigen::VectorXd* identity = nullptr) {
+                           double final_energy_val = 0.0,
+                           const Eigen::VectorXd* identity = nullptr,
+                           double depth_rmse_mm = -1.0) {
     std::ofstream file(filepath);
     if (!file.is_open()) {
         std::cerr << "Failed to open file for writing: " << filepath << std::endl;
@@ -263,12 +266,13 @@ bool saveTrackingStateJSON(const std::string& filepath,
     file << "],\n";
     
     // Metadata
-    // last_rmse_mm: kept for backward compat; value is actually optimization final_energy (not geometric RMSE in mm).
     file << "  \"frame_idx\": 0,\n";
     file << "  \"reinit_count\": 0,\n";
-    file << "  \"last_rmse_mm\": " << last_rmse_mm << ",\n";
-    file << "  \"final_energy\": " << last_rmse_mm << "\n";
-    
+    file << "  \"final_energy\": " << final_energy_val;
+    if (depth_rmse_mm >= 0.0) {
+        file << ",\n  \"depth_rmse_mm\": " << depth_rmse_mm;
+    }
+    file << "\n";
     file << "}\n";
     file.close();
     return true;
@@ -295,6 +299,7 @@ void printUsage(const char* program_name) {
               << "  --lambda-alpha <w>        Identity regularization (Week 6, overrides lambda-reg)\n"
               << "  --lambda-delta <w>        Expression regularization (Week 6, overrides lambda-reg)\n"
               << "  --lambda-translation-prior <w>  Translation prior weight in tracking (default: 0.5, 0=off)\n"
+              << "  --max-translation-delta-m <m>   Max translation change per frame in meters (default: 0.1, 0=no clip)\n"
               << "  --verbose                 Print detailed optimization output\n"
               << "  --help                    Show this help message\n"
               << "\n"
@@ -330,6 +335,7 @@ int main(int argc, char* argv[]) {
     double lambda_alpha_sep = 0.0;  // Week 6: if > 0 use for identity; else lambda_reg
     double lambda_delta_sep = 0.0;  // Week 6: if > 0 use for expression; else lambda_reg
     double lambda_translation_prior = 0.5;  // Translation prior in tracking (0 = disabled)
+    double max_translation_delta_m = 0.1;   // Max translation change per frame in meters (0 = no clip; reduces drift)
     
     // Parse command line arguments
     for (int i = 1; i < argc; ++i) {
@@ -385,6 +391,8 @@ int main(int argc, char* argv[]) {
             lambda_delta_sep = std::stod(argv[++i]);
         } else if (arg == "--lambda-translation-prior" && i + 1 < argc) {
             lambda_translation_prior = std::stod(argv[++i]);
+        } else if (arg == "--max-translation-delta-m" && i + 1 < argc) {
+            max_translation_delta_m = std::stod(argv[++i]);
         }
     }
     std::cout << "Mode: " << (optimize ? "Optimized" : "Mean Shape Only") << std::endl;
@@ -568,7 +576,7 @@ int main(int argc, char* argv[]) {
                 pose_scale = scale_pose;
                 loaded_from_json = true;
                 params.lambda_translation_prior = lambda_translation_prior;  // Reduce drift in tracking
-                params.max_translation_delta_m = 0.3;  // Hard-bound translation change per frame
+                params.max_translation_delta_m = max_translation_delta_m;    // Hard-bound translation change per frame
                 std::cout << "    Loaded pose: scale=" << pose_scale << ", t=[" << params.t.transpose() << "]" << std::endl;
             }
         }
@@ -657,6 +665,10 @@ int main(int argc, char* argv[]) {
         if (!output_state_json.empty()) {
             std::cout << "    Saving final state to: " << output_state_json << std::endl;
             double final_energy = result.final_energy;
+            double depth_rmse_mm = -1.0;
+            if (result.depth_valid_count > 0 && result.depth_energy >= 0.0) {
+                depth_rmse_mm = std::sqrt(result.depth_energy / result.depth_valid_count) * 1000.0;  // m -> mm
+            }
             const Eigen::VectorXd* identity_to_save = (stage_mode == "id" && result.final_params.alpha.size() > 0)
                 ? &result.final_params.alpha : nullptr;
             if (saveTrackingStateJSON(output_state_json,
@@ -665,7 +677,8 @@ int main(int argc, char* argv[]) {
                                       result.final_params.scale,
                                       result.final_params.delta,
                                       final_energy,
-                                      identity_to_save)) {
+                                      identity_to_save,
+                                      depth_rmse_mm)) {
                 std::cout << "    State saved successfully" << std::endl;
             }
         }

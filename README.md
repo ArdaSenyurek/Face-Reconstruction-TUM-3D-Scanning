@@ -4,6 +4,14 @@
 
 **Repository:** [https://github.com/ArdaSenyurek/Face-Reconstruction-TUM-3D-Scanning](https://github.com/ArdaSenyurek/Face-Reconstruction-TUM-3D-Scanning)
 
+This README describes what we implemented, how to install and run the project, key metrics that demonstrate we met the proposal, entry-point return values/exit codes, and where to find visualizations for the report.
+
+**Summary of accomplishments (key metrics):**
+- **Rigid alignment (Procrustes + ICP):** Landmark alignment error reduced from ~800 mm (pre-alignment) to ~15 mm (post-ICP), ~98% improvement (see `pose_init/*_rigid_report.json`).
+- **Optimization (Gauss-Newton):** Nearest-neighbor mesh–scan RMSE improvement of ~17 mm (rigid vs optimized) in typical runs (see `overlays_3d/*_overlay_metrics.json`).
+- **Runtime:** ~0.4 s per frame for reconstruction; pipeline logs total time in `outputs/logs/`.
+- **Deliverables:** Identity mesh, per-frame expression/pose, depth renderings and overlays, and quantitative metrics (depth error, landmark error, convergence, runtime) as in the proposal (Section 2.5 and 4).
+
 ---
 
 ## Pipeline design and implementation
@@ -18,7 +26,7 @@
 
 ## How we use this codebase for the project
 
-The project is described in the course proposal ([LaTeXAuthor_Guidelines_for_Proceedings.pdf](LaTeXAuthor_Guidelines_for_Proceedings.pdf)). Mapping from proposal to codebase:
+The proposal (Section 3) mentions RGB-D from Azure Kinect or RealSense; this implementation uses the **Biwi Kinect Head Pose dataset** instead. Mapping from proposal to codebase:
 
 | Proposal section | Implementation |
 |------------------|----------------|
@@ -89,9 +97,9 @@ flowchart TD
   Analysis --> End([End])
 ```
 
-- **Rigid alignment (Pose Init):** Explicit step; C++ `pose_init` runs **Procrustes** (similarity transform from landmark correspondences) then **ICP** refinement; outputs rigid-aligned mesh (PLY) and report JSON.
+- **Rigid alignment (Pose Init):** Explicit step; C++ `pose_init` runs **Procrustes** (similarity transform from landmark correspondences) then **ICP** refinement; outputs rigid-aligned mesh (PLY) and report JSON. The proposal listed PnP or Procrustes; we use Procrustes + ICP only.
 - **Reconstruction:** Single-frame; C++ `face_reconstruction` with optional **Gauss-Newton** (see optimization cycle below).
-- **Tracking:** Frame 0 uses rigid alignment; frames 1..N use warm-start from previous frame’s state + Gauss-Newton; optional temporal smoothing (EMA/SLERP).
+- **Tracking:** Frame 0 uses rigid alignment; frames 1..N use warm-start from previous frame’s state + Gauss-Newton; optional temporal smoothing (EMA/SLERP). If the head direction jumps between frames, use `--temporal-smoothing` and/or `--lambda-rotation-prior` (default 1.0) to reduce rotation jitter.
 
 ### Tracking flow (Frame 0 vs Frame 1..N)
 
@@ -200,6 +208,11 @@ Built with CMake; called by the pipeline or scripts.
 | **aggregate_summary.py** | Aggregate week6 metrics into one CSV. | `--week6-dir` (default `outputs/week6`) | `outputs/week6/summary.csv` |
 | **analyze_sparse_alignment.py** | Analyze pose_init JSON reports. | `--reports-dir`, `--output-dir` | Summary stats, plots, CSV |
 
+**Return values / exit codes:**
+- **pipeline/main.py:** Exits **0** on success, **1** on failure, **130** on Ctrl+C. Success means all requested steps completed; a step failure causes exit 1.
+- **Scripts above:** Exit **0** on success, **1** on error (e.g. missing input, invalid args). Use in scripts with `sys.exit(main())`.
+- **C++ binaries (build/bin/):** Exit **0** on success, **1** on failure (missing file, invalid config, or runtime error). The pipeline checks these to decide step success.
+
 ---
 
 ### Pipeline utils (runnable as scripts)
@@ -212,6 +225,8 @@ Built with CMake; called by the pipeline or scripts.
 | **pipeline/utils/triangulate_pointcloud.py** | Triangulate point cloud to mesh. | input PLY, output path |
 | **pipeline/utils/center_mesh.py** | Center mesh at origin. | input/output mesh paths |
 | **pipeline/utils/debug_alignment.py** | Debug alignment visualization. | `--seq`, paths |
+| **pipeline/utils/create_pointcloud_from_rgbd.py** | Build point cloud from RGB-D (depth + intrinsics). | Used by conversion and analysis steps; callable with image paths and output PLY |
+| **pipeline/utils/create_mean_shape_from_pointclouds.py** | Create mean shape from a set of point cloud PLYs. | Point cloud files + output dir; optional `--use-single` |
 | **pipeline/steps/overlays.py** | Generate overlays for sequences (e.g. 01, 17). | Run as module or via pipeline `--make-overlays` |
 
 ---
@@ -251,15 +266,42 @@ Executables appear in `build/bin/`.
 
 1. Clone the repo and go to the project root.
 2. Install Python deps: `pip install -r requirements.txt`
-3. Build C++ tools: `mkdir build && cd build && cmake .. && cmake --build .`
+3. **Build the C++ tools** (required for the pipeline):
+   ```bash
+   mkdir build && cd build
+   cmake ..
+   cmake --build .
+   ```
+   Executables will be in `build/bin/` (e.g. `face_reconstruction`, `pose_init`, `create_overlays`, `analysis`).
 4. (Optional) Obtain Biwi data: run with `--download` (requires Kaggle credentials) or place data under `data/` as expected by the pipeline.
-5. (Optional) BFM model: place BFM file (.mat or .h5) in `data/bfm/` (see Large assets below).
+5. (Optional) **BFM face model:** download the BFM (see **Large assets** below), then place the file (`.mat` or `.h5`) in `data/bfm/`. The pipeline will convert it to the project format (model setup step) or you can run `pipeline/utils/convert_bfm_to_project.py` manually.
+
+---
+
+## How to run
+
+From the **repository root**:
+
+```bash
+# Default run (uses existing data under data/; processes a few frames)
+python pipeline/main.py
+
+# Download Biwi data first, then run on 5 frames
+python pipeline/main.py --download --frames 5
+
+# Run with Gauss-Newton optimization and tracking, skip analysis
+python pipeline/main.py --no-analysis --optimize --track
+```
+
+Outputs go under `outputs/` (or `--output-root` if set). See **Entrypoints → Main pipeline** for all options (`--skip-convert`, `--make-overlays`, `--week6-eval`, etc.).
 
 ---
 
 ## Large assets
 
-Files larger than ~15 MB (e.g. BFM model) are **not** included in the repository or zip. Obtain the BFM (e.g. BFM 2017 or 2019 full head) from the official source or course resources and place it in `data/bfm/`. If you host such files on cloud storage (Google Drive, institutional host, etc.), add the link here for others to download.
+**Where to download the model:** The BFM (Basel Face Model, e.g. BFM 2017 or 2019 full head) is not included in the repo due to size. Download it from the **official BFM website** or from **course resources** (TUM 3D Scanning & Motion Capture). Place the downloaded file (`.mat` or `.h5`) in `data/bfm/`.
+
+**How to use it:** The pipeline’s model setup step converts the BFM to the project binary format (mean shape, identity/expression bases, faces). You can also run `pipeline/utils/convert_bfm_to_project.py` manually.
 
 ---
 
@@ -287,7 +329,7 @@ After a run (e.g. `python pipeline/main.py --frames 5 --optimize --track`), outp
   }
 }
 ```
-`rmse_cloud_mesh_m` is pointcloud-to-mesh RMSE in meters (~152 mm here).
+All depth values (`depth_min`, `depth_max`, `depth_mean`, `depth_std`) and `rmse_cloud_mesh_m` are in **meters**. The fields `cloud_points` and `rmse_cloud_mesh_m` appear only when the analysis step is run with a pointcloud (e.g. when conversion produces pointclouds and they are passed to the analysis binary); otherwise only depth stats and `runtime_seconds` may be present.
 
 **Rigid alignment** (`outputs/pose_init/<seq>/<frame>_rigid_report.json`) — example snippet:
 ```json
@@ -317,7 +359,17 @@ Nearest-neighbor mesh–scan RMSE in meters. Improvement = (0.1548 − 0.1374) �
   "was_reinit": true, "optimization_converged": true
 }
 ```
-Use `translation_*`, `rotation_angle_deg`, `scale`, `expression_norm` for per-frame pose/expression. In tracking mode the pipeline optimizes both pose and expression each frame (warm-start from the previous frame), so these values can change over time when the subject moves. For the meaning of `face_nn_rmse_mm` and `final_energy`, see the note below.
+Use `translation_*`, `rotation_angle_deg`, `scale`, `expression_norm` for per-frame pose/expression. In tracking mode the pipeline optimizes both pose and expression each frame (warm-start from the previous frame), so these values can change over time when the subject moves. For the meaning of `optimization_energy`, `final_energy`, and `depth_rmse_mm`, see the note below.
+
+**Visualizations for the report (where to find figures):**
+- **Depth: observed vs rendered:** `outputs/analysis/depth_residual_vis/<seq>/*_residual.png` — side-by-side or difference of D_obs and D_rend.
+- **Depth colormaps:** `outputs/analysis/depth_vis/<seq>/*.png` — observed/rendered depth as images.
+- **3D mesh–scan overlay:** `outputs/overlays_3d/<seq>/*_overlay_rigid.ply`, `*_overlay_opt.ply` — open in MeshLab/CloudCompare (cyan = scan, red = mesh).
+- **2D overlay (RGB + mesh):** `outputs/overlays/<seq>/*_overlay.png` (landmarks); for mesh projection use `generate_visuals.py` → `overlay_rgb.png`, or `create_overlays` → `*_overlay_2d.png` in the overlay output dir.
+- **Convergence (Gauss-Newton):** `outputs/week6/<seq>/convergence.json` (or per-frame) — plot `energy_history` / `step_norms` vs iteration for convergence curves.
+- **Pose-init / alignment quality:** Run `scripts/analyze_sparse_alignment.py` → summary stats and plots in the given `--output-dir`.
+
+Include a few of these (e.g. one depth residual, one 3D overlay, one convergence plot) in the written report to show qualitative and quantitative results.
 
 ---
 
@@ -344,7 +396,7 @@ The course proposal ([LaTeXAuthor_Guidelines_for_Proceedings.pdf](LaTeXAuthor_Gu
 | **Runtime** | `analysis/metrics.json` → `runtime_seconds` per frame; pipeline log for total time | Per-frame reconstruction time (~0.4 s in examples); total pipeline time in logs |
 | **Side-by-side D_obs vs D_rend** | `analysis/depth_residual_vis/<seq>/*_residual.png` | Visual comparison of observed vs rendered depth |
 | **Mesh alignment from multiple viewpoints** | `overlays_3d/<seq>/*.ply` (scan + rigid/opt mesh); open in MeshLab | 3D overlay PLYs (cyan scan, red mesh) for qualitative check |
-| **Temporal smoothness (reduced jitter)** | `analysis/tracking_summary_<seq>.json` (pose/expression per frame); `scripts/alignment_and_frame_metrics.py --tracking-summary` for frame-to-frame deltas | Per-frame pose and expression; optional temporal smoothing (EMA/SLERP) in pipeline |
+| **Temporal smoothness (reduced jitter)** | `analysis/tracking_summary_<seq>.json` (pose/expression per frame); `scripts/alignment_and_frame_metrics.py --tracking-summary` for frame-to-frame deltas | Per-frame pose and expression; use `--temporal-smoothing` (EMA/SLERP) and/or `--lambda-rotation-prior` (e.g. 1.0) to reduce head direction jitter |
 | **Example outputs: identity + tracked expressions** | `meshes/<seq>/*_tracked.ply`; Week 6: `identity.ply`, `expression.ply`, `tracked.ply` | Reconstructed meshes per frame; Stage 1/2/3 meshes in week6 for evaluation protocol |
 
 ### Essential files to keep (for report or submission)
@@ -388,7 +440,7 @@ Heavy or redundant data (e.g. all pointclouds, all runtime_meshes, every frame�
   `python scripts/alignment_and_frame_metrics.py --tracking-summary outputs/analysis/tracking_summary_01.json`
 
 **Note on tracking summary RMSE fields:**  
-- **`face_nn_rmse_mm`** is filled from the C++ binary’s optimization **final energy** (sum of weighted squared residuals), not geometric mesh–scan RMSE in mm. Large values (e.g. 88xxx or 264000) are energy, not mm.  
+- **`optimization_energy`** and **`final_energy`** are the C++ optimizer’s total energy (sum of weighted squared residuals), not geometric mesh–scan RMSE. Use **`depth_rmse_mm`** for comparable per-pixel depth error in mm when available.  
 - **`final_energy`** is the same value with a correct name; use it for convergence or relative quality.  
 - **`landmark_rmse_mm`** is not computed in tracking (always 0). For landmark/alignment quality use **pose_init** reports (`post_icp_rmse_mm` in `outputs/pose_init/<seq>/<frame>_rigid_report.json`).  
 - For **geometric mesh–scan quality** after tracking, use overlay metrics (`nn_rmse_m` in `*_overlay_metrics.json`) or run the analysis step and see `metrics.json` / `scripts/compute_metrics.py`.

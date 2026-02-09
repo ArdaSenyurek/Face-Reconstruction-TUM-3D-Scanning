@@ -120,6 +120,7 @@ struct OptimizationResult {
     double landmark_energy;
     double depth_energy;
     double regularization_energy;
+    int depth_valid_count = 0;     // Number of valid depth pixels (for per-pixel RMSE)
     double final_step_norm = 0.0;  // Week 6: last applied step norm
     double damping_used = 1e-4;    // Week 6: damping value used (for convergence.json)
 };
