@@ -11,6 +11,7 @@ Processes multiple frames with temporal continuity:
 import json
 import subprocess
 import csv
+import dataclasses
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -34,7 +35,8 @@ class TrackingState:
     # Tracking metadata
     frame_idx: int = 0
     reinit_count: int = 0
-    last_rmse_mm: float = 0.0
+    last_rmse_mm: float = 0.0  # Actually optimization final_energy when from C++; not geometric RMSE in mm
+    final_energy: float = 0.0   # Optimization total energy (same as last_rmse_mm from C++)
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for JSON serialization."""
@@ -42,8 +44,10 @@ class TrackingState:
     
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'TrackingState':
-        """Create from dictionary."""
-        return cls(**data)
+        """Create from dictionary (only known fields; missing keys use dataclass defaults)."""
+        allowed = {f.name for f in dataclasses.fields(cls)}
+        kwargs = {k: v for k, v in data.items() if k in allowed}
+        return cls(**kwargs)
     
     def save(self, path: Path):
         """Save state to JSON file."""
@@ -66,8 +70,9 @@ class FrameMetrics:
     sequence: str
     
     # Alignment quality
-    landmark_rmse_mm: float = 0.0
-    face_nn_rmse_mm: float = 0.0
+    landmark_rmse_mm: float = 0.0   # Not computed in tracking (always 0); use pose_init reports for landmark RMSE
+    face_nn_rmse_mm: float = 0.0   # From state: optimization final_energy (not geometric RMSE in mm)
+    final_energy: float = 0.0       # Optimization total energy; use overlay/analysis for geometric mesh-scan RMSE
     
     # Pose parameters
     translation_x: float = 0.0
@@ -336,6 +341,7 @@ class TrackingStep(PipelineStep):
                 
                 state = new_state
                 state.last_rmse_mm = metrics.face_nn_rmse_mm
+                state.final_energy = metrics.final_energy
             
             # Generate overlays if enabled
             if self.config.get("save_overlays_3d", True):
@@ -345,7 +351,7 @@ class TrackingStep(PipelineStep):
             if self.config.get("save_depth_residual_vis", True):
                 self._generate_depth_residual_vis(seq_id, frame_name, depth_path, intrinsics_path)
             
-            self.logger.info(f"    RMSE: {metrics.face_nn_rmse_mm:.2f} mm")
+            self.logger.info(f"    Final energy: {metrics.final_energy:.2f} (face_nn_rmse_mm field = energy, not geometric RMSE)")
         
         return metrics_list
     
@@ -590,6 +596,8 @@ class TrackingStep(PipelineStep):
                 if state.expression:
                     metrics.expression_norm = np.linalg.norm(state.expression)
                 
+                # Optimization energy (C++ writes as last_rmse_mm and final_energy; not geometric RMSE in mm)
+                metrics.final_energy = getattr(state, "final_energy", None) or state.last_rmse_mm
                 metrics.face_nn_rmse_mm = state.last_rmse_mm
             except Exception as e:
                 self.logger.warning(f"Error loading state: {e}")
@@ -814,6 +822,7 @@ class TrackingStep(PipelineStep):
                 "summary": {
                     "mean_rmse_mm": np.mean([m.face_nn_rmse_mm for m in seq_metrics]),
                     "std_rmse_mm": np.std([m.face_nn_rmse_mm for m in seq_metrics]),
+                    "mean_final_energy": float(np.mean([m.final_energy for m in seq_metrics])),
                     "reinit_count": sum(1 for m in seq_metrics if m.was_reinit),
                 }
             }
@@ -827,7 +836,7 @@ class TrackingStep(PipelineStep):
             with open(csv_path, 'w', newline='') as f:
                 writer = csv.DictWriter(f, fieldnames=[
                     "frame_idx", "frame_name", "sequence",
-                    "landmark_rmse_mm", "face_nn_rmse_mm",
+                    "landmark_rmse_mm", "face_nn_rmse_mm", "final_energy",
                     "translation_x", "translation_y", "translation_z",
                     "rotation_angle_deg", "scale", "expression_norm",
                     "was_reinit", "optimization_converged"

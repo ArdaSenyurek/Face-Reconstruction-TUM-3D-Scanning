@@ -263,9 +263,11 @@ bool saveTrackingStateJSON(const std::string& filepath,
     file << "],\n";
     
     // Metadata
+    // last_rmse_mm: kept for backward compat; value is actually optimization final_energy (not geometric RMSE in mm).
     file << "  \"frame_idx\": 0,\n";
     file << "  \"reinit_count\": 0,\n";
-    file << "  \"last_rmse_mm\": " << last_rmse_mm << "\n";
+    file << "  \"last_rmse_mm\": " << last_rmse_mm << ",\n";
+    file << "  \"final_energy\": " << last_rmse_mm << "\n";
     
     file << "}\n";
     file.close();

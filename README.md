@@ -317,7 +317,7 @@ Nearest-neighbor mesh–scan RMSE in meters. Improvement = (0.1548 − 0.1374) �
   "was_reinit": true, "optimization_converged": true
 }
 ```
-Use `translation_*`, `rotation_angle_deg`, `scale`, `expression_norm` for per-frame pose/expression. In tracking mode the pipeline optimizes both pose and expression each frame (warm-start from the previous frame), so these values can change over time when the subject moves. The `face_nn_rmse_mm` field in this file is currently optimization energy, not geometric RMSE in mm (see note below).
+Use `translation_*`, `rotation_angle_deg`, `scale`, `expression_norm` for per-frame pose/expression. In tracking mode the pipeline optimizes both pose and expression each frame (warm-start from the previous frame), so these values can change over time when the subject moves. For the meaning of `face_nn_rmse_mm` and `final_energy`, see the note below.
 
 ---
 
@@ -387,7 +387,11 @@ Heavy or redundant data (e.g. all pointclouds, all runtime_meshes, every frame�
 - To compute deltas between consecutive frames:  
   `python scripts/alignment_and_frame_metrics.py --tracking-summary outputs/analysis/tracking_summary_01.json`
 
-**Note:** The `face_nn_rmse_mm` field in the tracking summary is currently filled from the optimization energy written by the C++ binary, not from a mesh–scan RMSE in mm. So large values there (e.g. 88xxx) are not real mm; use overlay metrics or `compute_metrics.py` for actual geometric errors.
+**Note on tracking summary RMSE fields:**  
+- **`face_nn_rmse_mm`** is filled from the C++ binary’s optimization **final energy** (sum of weighted squared residuals), not geometric mesh–scan RMSE in mm. Large values (e.g. 88xxx or 264000) are energy, not mm.  
+- **`final_energy`** is the same value with a correct name; use it for convergence or relative quality.  
+- **`landmark_rmse_mm`** is not computed in tracking (always 0). For landmark/alignment quality use **pose_init** reports (`post_icp_rmse_mm` in `outputs/pose_init/<seq>/<frame>_rigid_report.json`).  
+- For **geometric mesh–scan quality** after tracking, use overlay metrics (`nn_rmse_m` in `*_overlay_metrics.json`) or run the analysis step and see `metrics.json` / `scripts/compute_metrics.py`.
 
 ---
 
