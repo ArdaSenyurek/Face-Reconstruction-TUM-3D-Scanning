@@ -59,6 +59,13 @@ if(Eigen3_FOUND)
     message(STATUS "Found Eigen3: ${EIGEN3_VERSION_STRING}")
 endif()
 
+find_package(OpenMP)
+if(OpenMP_CXX_FOUND)
+    message(STATUS "Found OpenMP: parallel Jacobian in face_reconstruction will be enabled")
+else()
+    message(STATUS "OpenMP not found: face_reconstruction will use single-threaded Jacobian (install libomp for parallel speedup)")
+endif()
+
 # Core source files
 set(CORE_SOURCES
     src/data/RGBDFrame.cpp
@@ -131,6 +138,9 @@ endfunction()
 
 # Production face reconstruction tool (Week 4: with optimization)
 add_project_executable(face_reconstruction src/tools/face_reconstruction.cpp)
+if(OpenMP_CXX_FOUND)
+    target_link_libraries(face_reconstruction OpenMP::OpenMP_CXX)
+endif()
 
 # Pose initialization tool (Procrustes alignment)
 add_project_executable(pose_init src/tools/pose_init.cpp)

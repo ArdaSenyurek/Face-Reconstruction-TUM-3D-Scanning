@@ -819,13 +819,20 @@ class PipelineOrchestrator:
                 "timeout": self.config.get("timeout", 0),
                 "save_pointclouds": self.config.get("save_pointclouds", False),
                 "optimize": self.config.get("optimize", False),
+                "recon_stage": self.config.get("recon_stage", "coeffs"),
                 "landmark_mapping": self.config.get("landmark_mapping", "data/landmark_mapping.txt"),
                 "verbose": self.config.get("verbose_optimize", False),
                 "max_iterations": self.config.get("max_iterations", 50),
                 "lambda_landmark": self.config.get("lambda_landmark", 1.0),
                 "lambda_depth": self.config.get("lambda_depth", 0.1),
                 "lambda_reg": self.config.get("lambda_reg", 1.0),
+                "lambda_alpha": self.config.get("lambda_alpha"),
+                "lambda_delta": self.config.get("lambda_delta"),
+                "coeff_clip_sigma": self.config.get("coeff_clip_sigma"),
                 "convergence_threshold": self.config.get("convergence_threshold", 1e-5),
+                "initial_damping": self.config.get("initial_damping", 1e-2),
+                "random_init_coeffs": self.config.get("random_init_coeffs", False),
+                "random_init_scale": self.config.get("random_init_scale", 0.5),
                 "depth_step": self.config.get("depth_step", 8),
             })
             result = step.run()
@@ -1010,6 +1017,10 @@ Examples:
     # Week 4: Optimization settings (optimization on by default)
     parser.add_argument("--no-optimize", dest="optimize", action="store_false", default=True,
                       help="Disable Gauss-Newton optimization (default: optimization enabled)")
+    parser.add_argument("--stage", type=str, default="coeffs", choices=("id", "expr", "coeffs"),
+                      help="Optimization stage: coeffs=identity+expression (default, 144 params), expr=expression only (64 params), id=identity only")
+    parser.add_argument("--fast", action="store_true",
+                      help="Fast optimization: --stage expr, --depth-step 16, --max-iterations 5 (faster than default coeffs)")
     parser.add_argument("--max-iterations", type=int, default=10,
                       help="Maximum optimization iterations (default: 10)")
     parser.add_argument("--timeout", type=int, default=0,
@@ -1019,9 +1030,23 @@ Examples:
     parser.add_argument("--lambda-depth", type=float, default=0.1,
                       help="Depth term weight (default: 0.1)")
     parser.add_argument("--lambda-reg", type=float, default=1.0,
-                      help="Regularization weight (default: 1.0)")
+                      help="Regularization weight for alpha and delta (default: 1.0)")
+    parser.add_argument("--lambda-alpha", type=float, default=None,
+                      help="Identity (alpha) regularization only; if unset, use --lambda-reg")
+    parser.add_argument("--lambda-delta", type=float, default=None,
+                      help="Expression (delta) regularization only; if unset, use --lambda-reg")
+    parser.add_argument("--coeff-clip-sigma", type=float, default=None,
+                      help="Clip alpha/delta to +/- N*sigma (default: 2.0; higher=more variation, e.g. 2.5 or 3.0)")
+    parser.add_argument("--more-variation", action="store_true",
+                      help="Encourage more identity/expression variation: --lambda-alpha 0.5, --lambda-delta 0.5, --coeff-clip-sigma 2.5")
     parser.add_argument("--convergence-threshold", type=float, default=1e-5,
                       help="Stop optimization when step norm or relative energy change below this (default: 1e-5)")
+    parser.add_argument("--initial-damping", type=float, default=1e-2,
+                      help="LM initial damping (default: 1e-2; higher = smaller first steps, more stable)")
+    parser.add_argument("--random-init-coeffs", action="store_true",
+                      help="Initialize alpha/delta with small random values (when not loading from JSON)")
+    parser.add_argument("--random-init-scale", type=float, default=0.5,
+                      help="Scale for random init: N(0, s*sigma) then clip (default: 0.5)")
     parser.add_argument("--depth-step", type=int, default=8,
                       help="Sample every Nth pixel for depth term (default: 8; higher=faster, e.g. 12 or 16)")
     parser.add_argument("--verbose-optimize", action="store_true",
@@ -1044,6 +1069,22 @@ def main() -> int:
     """Main entry point."""
     parser = build_arg_parser()
     args = parser.parse_args()
+    
+    # --fast: fewer params and coarser depth so optimization doesn't get stuck
+    if getattr(args, "fast", False):
+        args.stage = "expr"
+        args.depth_step = 16
+        args.max_iterations = 5
+    # --more-variation: weaker reg and looser clipping so faces differ more in identity/expression
+    if getattr(args, "more_variation", False):
+        if args.lambda_alpha is None:
+            args.lambda_alpha = 0.5
+        if args.lambda_delta is None:
+            args.lambda_delta = 0.5
+        if getattr(args, "coeff_clip_sigma", None) is None:
+            args.coeff_clip_sigma = 2.5
+        if args.max_iterations == 10:  # default; give identity more time to move
+            args.max_iterations = 25
     
     # Set up logging (fixed level, rarely changed)
     log_dir = args.output_root / "logs"
@@ -1098,11 +1139,18 @@ def main() -> int:
         "force_download": False,  # Rarely used, removed from CLI
         # Week 4: Optimization settings
         "optimize": args.optimize,
+        "recon_stage": args.stage,
         "max_iterations": args.max_iterations,
         "lambda_landmark": args.lambda_landmark,
         "lambda_depth": args.lambda_depth,
         "lambda_reg": args.lambda_reg,
+        "lambda_alpha": args.lambda_alpha,
+        "lambda_delta": args.lambda_delta,
+        "coeff_clip_sigma": getattr(args, "coeff_clip_sigma", None),
         "convergence_threshold": args.convergence_threshold,
+        "initial_damping": getattr(args, "initial_damping", 1e-2),
+        "random_init_coeffs": getattr(args, "random_init_coeffs", False),
+        "random_init_scale": getattr(args, "random_init_scale", 0.5),
         "depth_step": args.depth_step,
         "verbose_optimize": args.verbose_optimize,
         # Overlay generation

@@ -51,7 +51,11 @@ class ReconstructionStep(PipelineStep):
         lambda_reg = self.config.get("lambda_reg", 2.0)
         lambda_alpha = self.config.get("lambda_alpha")
         lambda_delta = self.config.get("lambda_delta")
+        coeff_clip_sigma = self.config.get("coeff_clip_sigma")
         convergence_threshold = self.config.get("convergence_threshold", 1e-5)
+        initial_damping = self.config.get("initial_damping", 1e-2)
+        random_init_coeffs = self.config.get("random_init_coeffs", False)
+        random_init_scale = self.config.get("random_init_scale", 0.5)
         depth_step = self.config.get("depth_step", 8)
         
         recon_reports = []
@@ -99,7 +103,11 @@ class ReconstructionStep(PipelineStep):
                     lambda_reg=lambda_reg,
                     lambda_alpha=lambda_alpha,
                     lambda_delta=lambda_delta,
+                    coeff_clip_sigma=coeff_clip_sigma,
                     convergence_threshold=convergence_threshold,
+                    initial_damping=initial_damping,
+                    random_init_coeffs=random_init_coeffs,
+                    random_init_scale=random_init_scale,
                     depth_step=depth_step,
                 )
                 
@@ -151,7 +159,11 @@ class ReconstructionStep(PipelineStep):
         lambda_reg: float = 2.0,
         lambda_alpha: Optional[float] = None,
         lambda_delta: Optional[float] = None,
+        coeff_clip_sigma: Optional[float] = None,
         convergence_threshold: float = 1e-5,
+        initial_damping: float = 1e-2,
+        random_init_coeffs: bool = False,
+        random_init_scale: float = 0.5,
         depth_step: int = 8,
     ) -> Tuple[bool, float]:
         """Run the C++ reconstruction binary. Returns (success, runtime_seconds)."""
@@ -186,7 +198,13 @@ class ReconstructionStep(PipelineStep):
                 cmd.extend(["--lambda-alpha", str(lambda_alpha)])
             if lambda_delta is not None:
                 cmd.extend(["--lambda-delta", str(lambda_delta)])
+            if coeff_clip_sigma is not None:
+                cmd.extend(["--coeff-clip-sigma", str(coeff_clip_sigma)])
             cmd.extend(["--convergence-threshold", str(convergence_threshold)])
+            cmd.extend(["--initial-damping", str(initial_damping)])
+            if random_init_coeffs:
+                cmd.append("--random-init-coeffs")
+                cmd.extend(["--random-init-scale", str(random_init_scale)])
         else:
             cmd.append("--no-optimize")
         

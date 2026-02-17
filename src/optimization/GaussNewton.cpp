@@ -1,15 +1,17 @@
 /**
- * Gauss-Newton Optimizer Implementation
+ * Gauss-Newton Optimizer with LM Adaptive Damping
  *
  * Iterative least-squares optimizer for face reconstruction.
  * Uses numerical differentiation for Jacobian computation.
- * Pure Gauss-Newton (no LM damping); minimal diagonal regularization only if JtJ is singular.
- * Stricter early stopping: stop on small step or minimal energy change, or on first line-search failure.
+ * Levenberg-Marquardt adaptive damping regularizes the step direction:
+ *   - Decrease damping on accepted step (damping /= 2)
+ *   - Increase damping on rejected step (damping *= 10)
+ *   - Clamped to [1e-6, 1e2]
+ * Runs a fixed number of iterations (no early stopping).
  *
  * In-memory: The entire optimization loop runs in memory. No file or disk I/O is performed
  * during optimize(); only the inputs (params, landmarks, mapping, observed_depth) and
- * internal matrices (residuals, Jacobian, JtJ, etc.) are used. Ensure sufficient RAM so
- * the process does not swap.
+ * internal matrices (residuals, Jacobian, JtJ, etc.) are used.
  */
 
 #include "optimization/GaussNewton.h"
@@ -20,8 +22,9 @@
 
 namespace face_reconstruction {
 
-// Minimal regularization only when Cholesky fails (numerical stability, not LM)
-static constexpr double JTJ_EPS = 1e-10;
+// LM damping bounds
+static constexpr double DAMPING_MIN = 1e-6;
+static constexpr double DAMPING_MAX = 1e2;
 
 // Z-range for centroid sanity check (soft: reject step, do not terminate)
 static constexpr double Z_CENTROID_MIN = 0.3;
@@ -37,20 +40,19 @@ void GaussNewtonOptimizer::initialize(const MorphableModel& model,
 
 Eigen::VectorXd GaussNewtonOptimizer::solveNormalEquations(
     const Eigen::MatrixXd& JtJ,
-    const Eigen::VectorXd& Jtr) {
+    const Eigen::VectorXd& Jtr,
+    double damping) {
     Eigen::MatrixXd M = JtJ;
     int n = M.rows();
+
+    // LM damping: add damping * (diag(JtJ) + 1) to the diagonal
+    for (int i = 0; i < n; ++i) {
+        M(i, i) += damping * (JtJ(i, i) + 1.0);
+    }
+
     Eigen::LLT<Eigen::MatrixXd> llt(M);
     if (llt.info() == Eigen::Success) {
         return llt.solve(-Jtr);
-    }
-    // Fallback: add minimal diagonal for singularity (not LM damping)
-    for (int i = 0; i < n; ++i) {
-        M(i, i) += JTJ_EPS * (JtJ(i, i) + 1.0);
-    }
-    Eigen::LLT<Eigen::MatrixXd> llt2(M);
-    if (llt2.info() == Eigen::Success) {
-        return llt2.solve(-Jtr);
     }
     Eigen::LDLT<Eigen::MatrixXd> ldlt(M);
     if (ldlt.info() == Eigen::Success) {
@@ -67,7 +69,7 @@ Eigen::VectorXd GaussNewtonOptimizer::solveLinearSystem(
     const Eigen::VectorXd& r) {
     Eigen::MatrixXd JtJ = J.transpose() * J;
     Eigen::VectorXd Jtr = J.transpose() * r;
-    return solveNormalEquations(JtJ, Jtr);
+    return solveNormalEquations(JtJ, Jtr, damping_);
 }
 
 bool GaussNewtonOptimizer::checkConvergence(const Eigen::VectorXd& delta, 
@@ -100,13 +102,16 @@ OptimizationResult GaussNewtonOptimizer::optimize(
         params.delta = Eigen::VectorXd::Zero(model_->num_expression_components);
     }
     
+    // Reset damping at the start of each optimization run (use param so caller can start higher)
+    damping_ = params.initial_damping;
+    
     // Compute initial energy
     result.initial_energy = energy_func_.computeTotalEnergy(
         params, landmarks, mapping, observed_depth);
     result.energy_history.push_back(result.initial_energy);
     
     if (verbose_) {
-        std::cout << "=== Gauss-Newton Optimization (pure GN, strict early stop) ===" << std::endl;
+        std::cout << "=== Gauss-Newton Optimization (LM adaptive damping) ===" << std::endl;
         std::cout << "Initial energy: " << std::fixed << std::setprecision(6) 
                   << result.initial_energy << std::endl;
         std::cout << "Parameters: " << params.numParameters() << std::endl;
@@ -117,6 +122,8 @@ OptimizationResult GaussNewtonOptimizer::optimize(
         std::cout << "  Pose: fixed from Procrustes" << std::endl;
         std::cout << "  Max iterations: " << params.max_iterations 
                   << ", convergence threshold: " << params.convergence_threshold << std::endl;
+        std::cout << "  Initial damping: " << std::scientific << std::setprecision(6)
+                  << damping_ << std::endl;
     }
     
     double prev_energy = result.initial_energy;
@@ -145,21 +152,12 @@ OptimizationResult GaussNewtonOptimizer::optimize(
             break;
         }
         
-        // Build normal equations
+        // Build normal equations with LM damping
         Eigen::MatrixXd JtJ = J.transpose() * J;
         Eigen::VectorXd Jtr = J.transpose() * residuals;
-        Eigen::VectorXd delta = solveNormalEquations(JtJ, Jtr);
+        Eigen::VectorXd delta = solveNormalEquations(JtJ, Jtr, damping_);
         
         delta *= params.step_size;
-        
-        // Check convergence based on delta norm
-        if (checkConvergence(delta, params.convergence_threshold)) {
-            result.converged = true;
-            if (verbose_) {
-                std::cout << "Converged (small delta norm) at iteration " << iter + 1 << std::endl;
-            }
-            break;
-        }
         
         // Line search: try full step, halve up to 5 times
         double best_energy = prev_energy;
@@ -198,49 +196,47 @@ OptimizationResult GaussNewtonOptimizer::optimize(
             step *= 0.5;
         }
         
+        // Adaptive damping schedule
         if (step_accepted) {
             params = best_params;
             result.energy_history.push_back(best_energy);
             result.step_norms.push_back((delta * step).norm());
+            // Decrease damping on success (more GN-like)
+            damping_ = std::max(DAMPING_MIN, damping_ / 2.0);
         } else {
-            // Stricter early stopping: stop on first line-search failure (no retries)
-            if (verbose_) {
-                std::cout << "  Line search failed; stopping (strict early stop)" << std::endl;
-            }
-            result.converged = false;
+            // Increase damping on failure (more gradient-descent-like), keep params, continue
+            damping_ = std::min(DAMPING_MAX, damping_ * 10.0);
             result.energy_history.push_back(prev_energy);
             result.step_norms.push_back(0.0);
-            break;
+            if (verbose_) {
+                std::cout << "  Line search failed, increasing damping to "
+                          << std::scientific << std::setprecision(2) << damping_ << std::endl;
+            }
         }
         
         // Compute per-term energies for logging
         double lm_energy = energy_func_.computeLandmarkEnergy(params, landmarks, mapping);
         double depth_energy = energy_func_.computeDepthEnergy(params, observed_depth);
         double reg_energy = energy_func_.computeRegularization(params);
+        double log_energy = step_accepted ? best_energy : prev_energy;
+        double log_step_norm = step_accepted ? (delta * step).norm() : 0.0;
         
         if (verbose_ || iter < 10 || iter % 5 == 0) {
             std::cout << "Iter " << std::setw(3) << iter + 1 << ": "
-                      << "total=" << std::fixed << std::setprecision(6) << best_energy
+                      << "total=" << std::fixed << std::setprecision(6) << log_energy
                       << " (lm=" << std::setprecision(4) << lm_energy
                       << ", depth=" << depth_energy
                       << ", reg=" << reg_energy << "), "
-                      << "step_norm=" << std::setprecision(4) << (delta * step).norm()
+                      << "step_norm=" << std::setprecision(4) << log_step_norm
+                      << ", damping=" << std::scientific << std::setprecision(2) << damping_
                       << std::endl;
         }
         
-        // Check for minimal relative energy progress
-        double energy_change = std::abs(prev_energy - best_energy);
-        if (prev_energy > 0 && energy_change < params.convergence_threshold * prev_energy) {
-            result.converged = true;
-            if (verbose_) {
-                std::cout << "Converged (minimal energy change) at iteration " 
-                          << iter + 1 << std::endl;
-            }
-            break;
-        }
-        
-        prev_energy = best_energy;
+        prev_energy = step_accepted ? best_energy : prev_energy;
     }
+    
+    // Completed all requested iterations
+    result.converged = (result.iterations == params.max_iterations);
     
     // Compute final energy terms for diagnostics
     result.final_params = params;

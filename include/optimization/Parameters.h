@@ -36,6 +36,8 @@ struct OptimizationParams {
     int max_iterations = 5;
     double convergence_threshold = 1e-4;
     double step_size = 1.0;      // Gauss-Newton step scale (fixed)
+    /** LM initial damping (higher = smaller steps at start; adaptive schedule then adjusts) */
+    double initial_damping = 1e-2;
     
     // Per-coefficient sigma for clipping (set from MorphableModel at init)
     Eigen::VectorXd identity_stddev;

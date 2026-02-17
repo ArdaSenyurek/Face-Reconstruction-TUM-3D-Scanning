@@ -12,6 +12,10 @@
 #include <cmath>
 #include <iostream>
 #include <algorithm>
+#include <memory>
+#ifdef _OPENMP
+#include <omp.h>
+#endif
 
 namespace face_reconstruction {
 
@@ -95,7 +99,7 @@ Eigen::Vector2d EnergyFunction::projectPoint(const Eigen::Vector3d& point) const
     return Eigen::Vector2d(u, v);
 }
 
-cv::Mat EnergyFunction::renderDepth(const Eigen::MatrixXd& vertices) const {
+cv::Mat EnergyFunction::renderDepth(const Eigen::MatrixXd& vertices, DepthRenderer* use_renderer) const {
     if (!model_ || model_->faces.rows() == 0) {
         cv::Mat depth(image_height_, image_width_, CV_32F, cv::Scalar(0.0f));
         for (int i = 0; i < vertices.rows(); ++i) {
@@ -118,7 +122,8 @@ cv::Mat EnergyFunction::renderDepth(const Eigen::MatrixXd& vertices) const {
     if (has_mask_ && !depth_mask_.empty()) {
         roi = cv::boundingRect(depth_mask_);
     }
-    return depth_renderer_.renderDepth(vertices, model_->faces, roi);
+    DepthRenderer* r = (use_renderer != nullptr) ? use_renderer : &depth_renderer_;
+    return r->renderDepth(vertices, model_->faces, roi);
 }
 
 // ---------------------------------------------------------------------------
@@ -440,7 +445,8 @@ Eigen::VectorXd EnergyFunction::computeDepthResidualsFixed(
     const OptimizationParams& params,
     const cv::Mat& observed_depth,
     const std::vector<PixelCoord>& pixels,
-    const cv::Mat& pre_rendered) const {
+    const cv::Mat& pre_rendered,
+    DepthRenderer* use_renderer) const {
     
     if (!initialized_ || !model_ || observed_depth.empty() || pixels.empty()) {
         return Eigen::VectorXd(static_cast<int>(pixels.size()));
@@ -455,7 +461,7 @@ Eigen::VectorXd EnergyFunction::computeDepthResidualsFixed(
             return Eigen::VectorXd::Zero(static_cast<int>(pixels.size()));
         }
         Eigen::MatrixXd transformed = applyPose(vertices, params);
-        rendered = renderDepth(transformed);
+        rendered = renderDepth(transformed, use_renderer);
     }
     
     double weight = std::sqrt(params.lambda_depth);
@@ -488,10 +494,11 @@ Eigen::VectorXd EnergyFunction::computeResidualsFixed(
     const LandmarkMapping& mapping,
     const cv::Mat& observed_depth,
     const std::vector<PixelCoord>& depth_pixels,
-    const cv::Mat& baseline_rendered) const {
+    const cv::Mat& baseline_rendered,
+    DepthRenderer* use_renderer) const {
     
     Eigen::VectorXd lm_residuals = computeLandmarkResiduals(params, landmarks, mapping);
-    Eigen::VectorXd depth_residuals = computeDepthResidualsFixed(params, observed_depth, depth_pixels, baseline_rendered);
+    Eigen::VectorXd depth_residuals = computeDepthResidualsFixed(params, observed_depth, depth_pixels, baseline_rendered, use_renderer);
     Eigen::VectorXd reg_residuals = computeRegResiduals(params);
     
     int total_size = lm_residuals.size() + depth_residuals.size() + reg_residuals.size();
@@ -564,19 +571,43 @@ Eigen::MatrixXd EnergyFunction::computeJacobian(
     
     Eigen::MatrixXd J(num_residuals, num_params);
     Eigen::VectorXd p0 = params.pack();
-    
+
+#ifdef _OPENMP
+    #pragma omp parallel
+    {
+        static thread_local std::unique_ptr<DepthRenderer> t_renderer;
+        if (!t_renderer || !t_renderer->isInitialized()) {
+            t_renderer = std::make_unique<DepthRenderer>();
+            t_renderer->initialize(intrinsics_, image_width_, image_height_);
+        }
+        DepthRenderer* my_renderer = t_renderer.get();
+        #pragma omp for schedule(dynamic, 1)
+        for (int j = 0; j < num_params; ++j) {
+            Eigen::VectorXd p_plus = p0;
+            p_plus(j) += epsilon_;
+
+            OptimizationParams params_plus = params;
+            params_plus.unpack(p_plus);
+
+            Eigen::VectorXd r_plus = computeResidualsFixed(params_plus, landmarks, mapping, observed_depth, depth_pixels, cv::Mat(), my_renderer);
+
+            J.col(j) = (r_plus - r0) / epsilon_;
+        }
+    }
+#else
     for (int j = 0; j < num_params; ++j) {
         Eigen::VectorXd p_plus = p0;
         p_plus(j) += epsilon_;
-        
+
         OptimizationParams params_plus = params;
         params_plus.unpack(p_plus);
-        
+
         Eigen::VectorXd r_plus = computeResidualsFixed(params_plus, landmarks, mapping, observed_depth, depth_pixels);
-        
+
         J.col(j) = (r_plus - r0) / epsilon_;
     }
-    
+#endif
+
     return J;
 }
 

@@ -39,6 +39,8 @@
 #include <fstream>
 #include <iomanip>
 #include <sstream>
+#include <random>
+#include <algorithm>
 
 using namespace face_reconstruction;
 
@@ -312,6 +314,9 @@ void printUsage(const char* program_name) {
               << "  --lambda-delta <w>       Expression (delta) regularization only (default: use lambda-reg)\n"
               << "  --coeff-clip-sigma <s>   Clip alpha/delta to +/- s*sigma (default: 2.0; lower=smoother, less spikes)\n"
               << "  --convergence-threshold <t> Stop when step norm or rel. energy change < t (default: 1e-4)\n"
+              << "  --initial-damping <d>     LM initial damping (default: 1e-2; higher = smaller first steps)\n"
+              << "  --random-init-coeffs     Initialize alpha/delta with small random values (when not loading from JSON)\n"
+              << "  --random-init-scale <s>   Scale for random init: N(0, s*sigma) then clip (default: 0.5)\n"
               << "  --help                   Show this help message\n"
               << "\nDefault behavior: robust masked pipeline with GN optimization.\n"
               << "Per-coefficient clipping (default 2-sigma) and stronger reg (lambda_reg=2) reduce spikes.\n"
@@ -340,6 +345,9 @@ int main(int argc, char* argv[]) {
     double lambda_delta = -1.0;   // if < 0, use lambda_reg
     double coeff_clip_sigma = 2.0;  // clip alpha/delta to ± this * sigma (lower = smoother)
     double convergence_threshold = 1e-4;
+    double initial_damping = 1e-2;  // LM initial damping (higher = more stable first steps)
+    bool random_init_coeffs = false;
+    double random_init_scale = 0.5;  // draw from N(0, scale*sigma), then clip to ±coeff_clip_sigma*sigma
     
     // Parse command line arguments
     for (int i = 1; i < argc; ++i) {
@@ -409,6 +417,14 @@ int main(int argc, char* argv[]) {
         } else if (arg == "--convergence-threshold" && i + 1 < argc) {
             convergence_threshold = std::stod(argv[++i]);
             if (convergence_threshold < 1e-8) convergence_threshold = 1e-8;
+        } else if (arg == "--initial-damping" && i + 1 < argc) {
+            initial_damping = std::stod(argv[++i]);
+            initial_damping = std::max(1e-6, std::min(1e2, initial_damping));
+        } else if (arg == "--random-init-coeffs") {
+            random_init_coeffs = true;
+        } else if (arg == "--random-init-scale" && i + 1 < argc) {
+            random_init_scale = std::stod(argv[++i]);
+            random_init_scale = std::max(0.01, std::min(2.0, random_init_scale));
         }
     }
     std::cout << "Mode: " << (optimize ? "Optimized (robust pipeline)" : "Mean Shape Only (--skip-opt)") << std::endl;
@@ -546,6 +562,7 @@ int main(int argc, char* argv[]) {
     params.coeff_clip_sigma = coeff_clip_sigma;
     params.max_iterations = max_iterations;
     params.convergence_threshold = convergence_threshold;
+    params.initial_damping = initial_damping;
     params.identity_stddev = model.identity_stddev;
     params.expression_stddev = model.expression_stddev;
     
@@ -656,6 +673,40 @@ int main(int argc, char* argv[]) {
                 
                 std::cout << "    Procrustes init: " << landmark_points_3d.size() 
                           << " correspondences, scale=" << pose_scale << std::endl;
+            }
+        }
+        
+        // Random initialization of alpha/delta when not loaded from JSON (can help identity/expression variation)
+        if (random_init_coeffs) {
+            std::cout << "    Random init: requested (scale=" << random_init_scale << ", clip ±" << coeff_clip_sigma << "*sigma)" << std::endl;
+            if (loaded_from_json) {
+                std::cout << "    Random init: skipped (pose/identity loaded from JSON)" << std::endl;
+            } else {
+                // Use model stddevs (params are already set from model; fallback to model if empty)
+                const Eigen::VectorXd& id_sigma = (params.identity_stddev.size() > 0) ? params.identity_stddev : model.identity_stddev;
+                const Eigen::VectorXd& expr_sigma = (params.expression_stddev.size() > 0) ? params.expression_stddev : model.expression_stddev;
+                std::random_device rd;
+                std::mt19937 gen(rd());
+                if (params.optimize_identity && params.alpha.size() > 0 && id_sigma.size() > 0) {
+                    for (int i = 0; i < params.alpha.size() && i < id_sigma.size(); ++i) {
+                        double sigma = id_sigma(i);
+                        if (sigma < 1e-10) sigma = 1.0;
+                        std::normal_distribution<> dist(0.0, random_init_scale * sigma);
+                        double limit = coeff_clip_sigma * sigma;
+                        params.alpha(i) = std::max(-limit, std::min(limit, dist(gen)));
+                    }
+                    std::cout << "    Random init alpha (scale=" << random_init_scale << "*sigma, clip ±" << coeff_clip_sigma << "*sigma)" << std::endl;
+                }
+                if (params.optimize_expression && params.delta.size() > 0 && expr_sigma.size() > 0) {
+                    for (int i = 0; i < params.delta.size() && i < expr_sigma.size(); ++i) {
+                        double sigma = expr_sigma(i);
+                        if (sigma < 1e-10) sigma = 1.0;
+                        std::normal_distribution<> dist(0.0, random_init_scale * sigma);
+                        double limit = coeff_clip_sigma * sigma;
+                        params.delta(i) = std::max(-limit, std::min(limit, dist(gen)));
+                    }
+                    std::cout << "    Random init delta (scale=" << random_init_scale << "*sigma, clip ±" << coeff_clip_sigma << "*sigma)" << std::endl;
+                }
             }
         }
         

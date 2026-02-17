@@ -125,16 +125,19 @@ public:
     /**
      * Compute depth residuals at a fixed set of pixel coordinates.
      * If pre_rendered is non-empty and same size as depth map, use it instead of rendering (saves one render when at baseline).
+     * If use_renderer is non-null, use it for rendering (for parallel Jacobian; otherwise use shared depth_renderer_).
      */
     Eigen::VectorXd computeDepthResidualsFixed(
         const OptimizationParams& params,
         const cv::Mat& observed_depth,
         const std::vector<PixelCoord>& pixels,
-        const cv::Mat& pre_rendered = cv::Mat()) const;
+        const cv::Mat& pre_rendered = cv::Mat(),
+        DepthRenderer* use_renderer = nullptr) const;
 
     /**
      * Compute the full stacked residual vector using a fixed depth pixel set.
      * If baseline_rendered is non-empty, use it for the depth part instead of re-rendering.
+     * If use_renderer is non-null, use it when a depth render is needed (for parallel Jacobian).
      */
     Eigen::VectorXd computeResidualsFixed(
         const OptimizationParams& params,
@@ -142,7 +145,8 @@ public:
         const LandmarkMapping& mapping,
         const cv::Mat& observed_depth,
         const std::vector<PixelCoord>& depth_pixels,
-        const cv::Mat& baseline_rendered = cv::Mat()) const;
+        const cv::Mat& baseline_rendered = cv::Mat(),
+        DepthRenderer* use_renderer = nullptr) const;
     
     /**
      * Week 6: Get mesh vertices in camera space (for early-stop Z range check).
@@ -203,9 +207,10 @@ private:
     Eigen::Vector2d projectPoint(const Eigen::Vector3d& point) const;
     
     /**
-     * Render depth map from current mesh
+     * Render depth map from current mesh.
+     * If use_renderer is non-null, use it (for parallel Jacobian); otherwise use depth_renderer_.
      */
-    cv::Mat renderDepth(const Eigen::MatrixXd& vertices) const;
+    cv::Mat renderDepth(const Eigen::MatrixXd& vertices, DepthRenderer* use_renderer = nullptr) const;
     
     /**
      * Compute landmark residuals only (for Jacobian computation)

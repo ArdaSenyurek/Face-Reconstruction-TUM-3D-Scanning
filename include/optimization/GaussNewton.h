@@ -69,10 +69,14 @@ private:
     bool initialized_ = false;
     bool verbose_ = false;
     
+    // LM adaptive damping: regularizes step direction when JtJ is ill-conditioned.
+    // Decreased on accepted step (/2), increased on rejected step (*10), clamped to [1e-6, 1e2].
+    double damping_ = 1e-4;
+    
     /**
-     * Solve JtJ * delta = -Jtr (pure Gauss-Newton). Minimal diagonal regularization only if JtJ is singular.
+     * Solve (JtJ + damping * diag(JtJ + I)) * delta = -Jtr (Levenberg-Marquardt style).
      */
-    Eigen::VectorXd solveNormalEquations(const Eigen::MatrixXd& JtJ, const Eigen::VectorXd& Jtr);
+    Eigen::VectorXd solveNormalEquations(const Eigen::MatrixXd& JtJ, const Eigen::VectorXd& Jtr, double damping);
     
     /**
      * Solve the linear system (J^T * J + lambda * I) * delta = -J^T * r

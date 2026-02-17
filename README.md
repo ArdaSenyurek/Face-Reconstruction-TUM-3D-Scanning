@@ -157,6 +157,8 @@ python pipeline/main.py --download --frames 5
 python pipeline/main.py --no-analysis --optimize
 ```
 
+**If all faces look too similar (low identity/expression variation):** Use `--more-variation` to weaken regularization and loosen coefficient clipping so the optimizer can fit more distinct identities and expressions. Or set explicitly: `--lambda-alpha 0.5 --lambda-delta 0.5 --coeff-clip-sigma 2.5`. See `docs/OPTIMIZATION_AND_WORKFLOW.md` §6.4 for details.
+
 **Outputs:** Under `output_root`: `converted/`, `landmarks/`, `pose_init/`, `meshes/`, `analysis/`, `logs/`.
 
 ---
