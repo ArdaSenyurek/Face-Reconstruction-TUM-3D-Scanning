@@ -777,7 +777,7 @@ class PipelineOrchestrator:
                 "run_frames": self.config.get("run_frames", 5),
                 "frame_step": self.config.get("frame_step", 20),
                 "frame_indices": self.config.get("frame_indices"),
-                "timeout": self.config.get("timeout", 60),
+                "timeout": self.config.get("timeout", 0),
             })
             result = step.run()
             self._record_result("pose_init", result)
@@ -816,7 +816,7 @@ class PipelineOrchestrator:
                 "run_frames": self.config.get("run_frames", 5),
                 "frame_step": self.config.get("frame_step", 20),
                 "frame_indices": self.config.get("frame_indices"),
-                "timeout": self.config.get("timeout", 60),
+                "timeout": self.config.get("timeout", 0),
                 "save_pointclouds": self.config.get("save_pointclouds", False),
                 "optimize": self.config.get("optimize", False),
                 "landmark_mapping": self.config.get("landmark_mapping", "data/landmark_mapping.txt"),
@@ -826,6 +826,7 @@ class PipelineOrchestrator:
                 "lambda_depth": self.config.get("lambda_depth", 0.1),
                 "lambda_reg": self.config.get("lambda_reg", 1.0),
                 "convergence_threshold": self.config.get("convergence_threshold", 1e-5),
+                "depth_step": self.config.get("depth_step", 8),
             })
             result = step.run()
             self._record_result("reconstruction", result)
@@ -1011,8 +1012,8 @@ Examples:
                       help="Disable Gauss-Newton optimization (default: optimization enabled)")
     parser.add_argument("--max-iterations", type=int, default=10,
                       help="Maximum optimization iterations (default: 10)")
-    parser.add_argument("--timeout", type=int, default=120,
-                      help="Timeout in seconds per frame for reconstruction (default: 120)")
+    parser.add_argument("--timeout", type=int, default=0,
+                      help="Timeout in seconds per frame for reconstruction (0 = no limit, default)")
     parser.add_argument("--lambda-landmark", type=float, default=1.0,
                       help="Landmark term weight (default: 1.0)")
     parser.add_argument("--lambda-depth", type=float, default=0.1,
@@ -1021,6 +1022,8 @@ Examples:
                       help="Regularization weight (default: 1.0)")
     parser.add_argument("--convergence-threshold", type=float, default=1e-5,
                       help="Stop optimization when step norm or relative energy change below this (default: 1e-5)")
+    parser.add_argument("--depth-step", type=int, default=8,
+                      help="Sample every Nth pixel for depth term (default: 8; higher=faster, e.g. 12 or 16)")
     parser.add_argument("--verbose-optimize", action="store_true",
                       help="Print detailed optimization output")
     
@@ -1100,6 +1103,7 @@ def main() -> int:
         "lambda_depth": args.lambda_depth,
         "lambda_reg": args.lambda_reg,
         "convergence_threshold": args.convergence_threshold,
+        "depth_step": args.depth_step,
         "verbose_optimize": args.verbose_optimize,
         # Overlay generation
         "make_overlays": args.make_overlays,

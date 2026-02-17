@@ -37,7 +37,7 @@ class ReconstructionStep(PipelineStep):
         run_frames = self.config.get("run_frames", 1)
         frame_step = self.config.get("frame_step", 20)
         frame_indices = self.config.get("frame_indices")
-        timeout = self.config.get("timeout", 60)
+        timeout = self.config.get("timeout", 0)  # 0 = no limit (optimization can take minutes)
         save_pointclouds = self.config.get("save_pointclouds", False)
         
         # Week 4: Optimization settings
