@@ -10,6 +10,12 @@ Generates accurate landmark-to-vertex mapping by:
 Usage:
     python pipeline/utils/create_bfm_landmark_mapping.py
 
+Landmark mapping uses the BFM mean shape: for each dlib landmark we have a BFM
+semantic 3D position; we map to a mesh vertex. By default we use "anti-center-bias":
+among the k nearest vertices we pick the one most outward from the face center
+toward the semantic point, so peripheral landmarks (eyebrows, lip corners) are not
+pulled inward and overlays align better.
+
 NOTE: The BFM model only provides ~30 semantic landmarks (eyes, nose, mouth, etc.)
       but NOT the jaw contour (dlib landmarks 0-16). The current mapping covers:
       - Chin tip (dlib 8)
@@ -124,16 +130,65 @@ def find_closest_vertex(vertices: np.ndarray, target: np.ndarray) -> int:
     return int(np.argmin(distances))
 
 
+def find_k_nearest_vertex_indices(vertices: np.ndarray, target: np.ndarray, k: int) -> np.ndarray:
+    """Return indices of the k vertices closest to target (ascending distance)."""
+    distances = np.linalg.norm(vertices - target, axis=1)
+    return np.argsort(distances)[:k]
+
+
+def choose_vertex_outward(
+    vertices: np.ndarray,
+    target: np.ndarray,
+    face_center: np.ndarray,
+    k: int = 15,
+) -> int:
+    """
+    Among the k-nearest vertices to target, choose the one that is most 'outward'
+    from the face center toward the target. This reduces center bias: the raw
+    nearest vertex on a curved mesh can lie between the semantic point and the
+    center; picking the most outward vertex in that direction improves overlay
+    alignment at eyebrows, jaw, and lip corners.
+    """
+    if k <= 0:
+        return find_closest_vertex(vertices, target)
+    idxs = find_k_nearest_vertex_indices(vertices, target, min(k, len(vertices)))
+    direction = target - face_center
+    n = np.linalg.norm(direction)
+    if n < 1e-9:
+        return int(idxs[0])
+    direction = direction / n
+    best_i = 0
+    best_proj = -np.inf
+    for i in idxs:
+        proj = np.dot(vertices[i] - face_center, direction)
+        if proj > best_proj:
+            best_proj = proj
+            best_i = i
+    return int(best_i)
+
+
 def create_mapping(
     bfm_path: Path,
     output_path: Path,
-    visualize: bool = True
+    visualize: bool = True,
+    anti_center_bias: bool = True,
+    k_outward: int = 15,
 ) -> Dict[int, int]:
-    """Create landmark mapping from dlib indices to BFM vertex indices."""
+    """Create landmark mapping from dlib indices to BFM vertex indices.
     
+    If anti_center_bias is True (default), for each BFM semantic landmark we choose
+    among the k_outward nearest vertices the one that is most 'outward' from the
+    face center toward the landmark. This reduces the bias where nearest-vertex
+    snapping pulls peripheral landmarks (eyebrows, lip corners, etc.) toward the
+    center and worsens overlay alignment.
+    """
     # Load BFM data
     bfm_landmarks = load_bfm_landmarks(bfm_path)
     vertices = load_bfm_mean_shape(bfm_path)
+    
+    # Face center: mean of all vertices (used to define "outward" direction)
+    face_center = np.mean(vertices, axis=0)
+    print(f"\nFace center (mean of vertices): {face_center}")
     
     # Print available BFM landmarks for reference
     print("\nAvailable BFM landmarks:")
@@ -143,6 +198,8 @@ def create_mapping(
     # Create mapping
     mapping = {}
     print("\n=== Dlib to BFM Vertex Mapping ===")
+    if anti_center_bias:
+        print(f"  Using anti-center-bias: among k={k_outward} nearest, pick most outward from center")
     
     for dlib_idx, bfm_name in sorted(DLIB_TO_BFM_MAP.items()):
         if bfm_name not in bfm_landmarks:
@@ -152,8 +209,11 @@ def create_mapping(
         # Get BFM landmark coordinate
         target_coord = bfm_landmarks[bfm_name]
         
-        # Find closest vertex
-        vertex_idx = find_closest_vertex(vertices, target_coord)
+        # Choose vertex: either classic nearest or outward among k-nearest
+        if anti_center_bias:
+            vertex_idx = choose_vertex_outward(vertices, target_coord, face_center, k=k_outward)
+        else:
+            vertex_idx = find_closest_vertex(vertices, target_coord)
         
         # Get actual vertex position for verification
         vertex_pos = vertices[vertex_idx]
@@ -166,7 +226,7 @@ def create_mapping(
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with open(output_path, 'w') as f:
         f.write("# BFM Landmark Mapping (dlib 68 -> BFM vertex index)\n")
-        f.write("# Generated from BFM 2019 fullHead model semantic landmarks\n")
+        f.write("# Generated from BFM semantic landmarks; vertex = k-nearest then most outward from center\n")
         f.write("# Format: dlib_landmark_idx BFM_vertex_idx\n")
         for dlib_idx in sorted(mapping.keys()):
             vertex_idx = mapping[dlib_idx]
@@ -257,6 +317,10 @@ def main():
                        help="Output mapping file")
     parser.add_argument("--no-visualize", action="store_true",
                        help="Skip visualization")
+    parser.add_argument("--no-anti-center-bias", action="store_true",
+                       help="Use classic nearest vertex only (can bias peripheral landmarks inward)")
+    parser.add_argument("--k-outward", type=int, default=15,
+                       help="Among k nearest vertices, pick most outward (default 15)")
     
     args = parser.parse_args()
     
@@ -267,7 +331,13 @@ def main():
         print(f"Error: BFM file not found: {bfm_path}")
         return 1
     
-    create_mapping(bfm_path, output_path, visualize=not args.no_visualize)
+    create_mapping(
+        bfm_path,
+        output_path,
+        visualize=not args.no_visualize,
+        anti_center_bias=not args.no_anti_center_bias,
+        k_outward=max(1, args.k_outward),
+    )
     return 0
 
 

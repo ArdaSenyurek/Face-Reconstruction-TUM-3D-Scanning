@@ -10,7 +10,6 @@ Metrics units:
 
 import json
 import subprocess
-import time
 from pathlib import Path
 from typing import Optional, Dict, Any
 
@@ -61,65 +60,51 @@ class AnalysisStep(PipelineStep):
                 
                 entry = {}
                 
-                # Point cloud info
-                if save_pointclouds:
-                    pc_out = analysis_root / "pointclouds" / seq_name / f"{frame_stem}.ply"
-                    if pc_out.exists():
-                        num_points = self._count_ply_points(pc_out)
-                        entry["cloud_points"] = float(num_points)
+                pc_out = analysis_root / "pointclouds" / seq_name / f"{frame_stem}.ply"
+                if save_pointclouds and pc_out.exists():
+                    entry["cloud_points"] = float(self._count_ply_points(pc_out))
                 
-                # Depth visualization (computed by C++ binary)
-                if save_depth_vis:
-                    vis_out = analysis_root / "depth_vis" / seq_name / f"{frame_stem}.png"
-                    analysis_binary = Path(self.config.get("analysis_binary", "build/bin/analysis"))
-                    if analysis_binary.exists():
-                        metrics_result = self._run_analysis(analysis_binary, None, None, depth_frame, vis_out, None)
-                        # Depth stats are in meters (C++ analysis uses depth scale 1000 -> meters)
+                # Build inputs for a single C++ analysis call per frame (avoids 2 subprocesses per frame)
+                need_depth = save_depth_vis or save_metrics or measure_runtime
+                need_rmse = save_metrics and mesh_path.exists()
+                if need_rmse and not pc_out.exists() and depth_frame.exists() and intrinsics_path.exists():
+                    try:
+                        from pipeline.utils.create_pointcloud_from_rgbd import create_pointcloud_from_rgbd
+                        pc_out.parent.mkdir(parents=True, exist_ok=True)
+                        create_pointcloud_from_rgbd(
+                            depth_frame, depth_frame, intrinsics_path, pc_out,
+                            depth_scale=1000.0
+                        )
+                    except Exception as e:
+                        self.logger.debug(f"Could not create pointcloud for {seq_name}/{frame_stem}: {e}")
+                
+                analysis_binary = Path(self.config.get("analysis_binary", "build/bin/analysis"))
+                if analysis_binary.exists() and (need_depth or (need_rmse and pc_out.exists())):
+                    vis_out = (analysis_root / "depth_vis" / seq_name / f"{frame_stem}.png") if save_depth_vis else None
+                    pc_arg = pc_out if (need_rmse and pc_out.exists()) else None
+                    mesh_arg = mesh_path if need_rmse else None
+                    depth_arg = depth_frame if (need_depth and depth_frame.exists()) else None
+                    metrics_result = self._run_analysis(
+                        analysis_binary, pc_arg, mesh_arg, depth_arg, vis_out, None
+                    )
+                    if depth_arg and metrics_result:
                         entry.update({
                             "depth_min": metrics_result.get("depth_min", 0.0),
                             "depth_max": metrics_result.get("depth_max", 0.0),
                             "depth_mean": metrics_result.get("depth_mean", 0.0),
                             "depth_std": metrics_result.get("depth_std", 0.0),
                         })
+                    if pc_arg and mesh_arg and metrics_result:
+                        if "rmse_cloud_mesh_m" in metrics_result:
+                            entry["rmse_cloud_mesh_m"] = metrics_result["rmse_cloud_mesh_m"]
+                        if "cloud_points" in metrics_result:
+                            entry["cloud_points"] = metrics_result["cloud_points"]
                 
-                # Cloud-to-mesh RMSE (computed by C++ binary)
-                if save_metrics and mesh_path.exists():
-                    pc_out = analysis_root / "pointclouds" / seq_name / f"{frame_stem}.ply"
-                    if not pc_out.exists() and depth_frame.exists() and intrinsics_path.exists():
-                        # Option B: generate pointcloud from depth so we can compute RMSE in tracking mode
-                        try:
-                            from pipeline.utils.create_pointcloud_from_rgbd import create_pointcloud_from_rgbd
-                            pc_out.parent.mkdir(parents=True, exist_ok=True)
-                            if create_pointcloud_from_rgbd(
-                                depth_frame, depth_frame, intrinsics_path, pc_out,
-                                depth_scale=1000.0
-                            ):
-                                pass  # pc_out now exists
-                        except Exception as e:
-                            self.logger.debug(f"Could not create pointcloud from depth for {seq_name}/{frame_stem}: {e}")
-                    if pc_out.exists():
-                        analysis_binary = Path(self.config.get("analysis_binary", "build/bin/analysis"))
-                        if analysis_binary.exists():
-                            metrics_result = self._run_analysis(analysis_binary, pc_out, mesh_path, None, None, None)
-                            if "rmse_cloud_mesh_m" in metrics_result:
-                                entry["rmse_cloud_mesh_m"] = metrics_result["rmse_cloud_mesh_m"]
-                            if "cloud_points" in metrics_result:
-                                entry["cloud_points"] = metrics_result["cloud_points"]
-                
-                # Runtime measurement (reruns reconstruction)
+                # Runtime: use value recorded during reconstruction (no re-run, no runtime_meshes)
                 if measure_runtime:
-                    rgb_path = seq_dir / "rgb" / f"{frame_stem}.png"
-                    depth_path = seq_dir / "depth" / f"{frame_stem}.png"
-                    runtime = self._measure_runtime(
-                        Path(self.config.get("recon_binary", "build/bin/face_reconstruction")),
-                        rgb_path,
-                        depth_path,
-                        intrinsics_path,
-                        Path(self.config.get("model_dir", "data/model_biwi")),
-                        self.config.get("timeout", 60)
-                    )
-                    if runtime is not None:
-                        entry["runtime_seconds"] = runtime
+                    runtime = recon_report.get("runtime_seconds")
+                    if runtime is not None and not (isinstance(runtime, float) and (runtime != runtime)):  # not NaN
+                        entry["runtime_seconds"] = float(runtime)
                     else:
                         entry["runtime_seconds"] = float("nan")
                 
@@ -185,33 +170,3 @@ class AnalysisStep(PipelineStep):
             self.logger.debug(f"Analysis binary failed: {e}")
         
         return metrics
-    
-    def _measure_runtime(self, binary: Path, rgb: Path, depth: Path, intrinsics: Path,
-                        model_dir: Path, timeout: int) -> Optional[float]:
-        """Measure reconstruction runtime by rerunning the binary."""
-        if not binary.exists():
-            self.logger.warning(f"Binary not found for runtime measurement: {binary}")
-            return None
-        
-        tmp_mesh = Path(self.config["analysis_root"]) / "runtime_meshes" / rgb.parent.parent.name / f"{rgb.stem}_tmp.ply"
-        tmp_mesh.parent.mkdir(parents=True, exist_ok=True)
-        
-        cmd = [
-            str(binary),
-            "--rgb", str(rgb),
-            "--depth", str(depth),
-            "--intrinsics", str(intrinsics),
-            "--model-dir", str(model_dir),
-            "--output-mesh", str(tmp_mesh),
-        ]
-        
-        try:
-            start = time.time()
-            subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, 
-                         stderr=subprocess.DEVNULL, timeout=timeout)
-            end = time.time()
-            return end - start
-        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
-            self.logger.warning(f"Runtime measurement failed for {rgb.name}: {e}")
-            return None
-

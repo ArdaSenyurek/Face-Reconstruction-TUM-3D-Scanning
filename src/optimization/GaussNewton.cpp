@@ -1,8 +1,15 @@
 /**
  * Gauss-Newton Optimizer Implementation
- * 
+ *
  * Iterative least-squares optimizer for face reconstruction.
  * Uses numerical differentiation for Jacobian computation.
+ * Pure Gauss-Newton (no LM damping); minimal diagonal regularization only if JtJ is singular.
+ * Stricter early stopping: stop on small step or minimal energy change, or on first line-search failure.
+ *
+ * In-memory: The entire optimization loop runs in memory. No file or disk I/O is performed
+ * during optimize(); only the inputs (params, landmarks, mapping, observed_depth) and
+ * internal matrices (residuals, Jacobian, JtJ, etc.) are used. Ensure sufficient RAM so
+ * the process does not swap.
  */
 
 #include "optimization/GaussNewton.h"
@@ -12,6 +19,13 @@
 #include <iostream>
 
 namespace face_reconstruction {
+
+// Minimal regularization only when Cholesky fails (numerical stability, not LM)
+static constexpr double JTJ_EPS = 1e-10;
+
+// Z-range for centroid sanity check (soft: reject step, do not terminate)
+static constexpr double Z_CENTROID_MIN = 0.3;
+static constexpr double Z_CENTROID_MAX = 2.0;
 
 void GaussNewtonOptimizer::initialize(const MorphableModel& model,
                                       const CameraIntrinsics& intrinsics,
@@ -24,23 +38,28 @@ void GaussNewtonOptimizer::initialize(const MorphableModel& model,
 Eigen::VectorXd GaussNewtonOptimizer::solveNormalEquations(
     const Eigen::MatrixXd& JtJ,
     const Eigen::VectorXd& Jtr) {
-    Eigen::MatrixXd JtJ_damped = JtJ;
-    int n = JtJ_damped.rows();
-    for (int i = 0; i < n; ++i) {
-        JtJ_damped(i, i) += damping_ * (JtJ(i, i) + 1.0);
-    }
-    Eigen::LLT<Eigen::MatrixXd> llt(JtJ_damped);
+    Eigen::MatrixXd M = JtJ;
+    int n = M.rows();
+    Eigen::LLT<Eigen::MatrixXd> llt(M);
     if (llt.info() == Eigen::Success) {
         return llt.solve(-Jtr);
     }
-    Eigen::LDLT<Eigen::MatrixXd> ldlt(JtJ_damped);
+    // Fallback: add minimal diagonal for singularity (not LM damping)
+    for (int i = 0; i < n; ++i) {
+        M(i, i) += JTJ_EPS * (JtJ(i, i) + 1.0);
+    }
+    Eigen::LLT<Eigen::MatrixXd> llt2(M);
+    if (llt2.info() == Eigen::Success) {
+        return llt2.solve(-Jtr);
+    }
+    Eigen::LDLT<Eigen::MatrixXd> ldlt(M);
     if (ldlt.info() == Eigen::Success) {
         return ldlt.solve(-Jtr);
     }
     if (verbose_) {
         std::cout << "Warning: Using pseudoinverse for linear solve" << std::endl;
     }
-    return JtJ_damped.completeOrthogonalDecomposition().solve(-Jtr);
+    return M.completeOrthogonalDecomposition().solve(-Jtr);
 }
 
 Eigen::VectorXd GaussNewtonOptimizer::solveLinearSystem(
@@ -71,19 +90,7 @@ OptimizationResult GaussNewtonOptimizer::optimize(
         return result;
     }
     
-    // Copy initial parameters
     OptimizationParams params = initial_params;
-    
-    // Set translation prior (previous frame pose) for tracking; reduces drift when lambda_translation_prior > 0
-    energy_func_.setTranslationPrior(initial_params.t);
-    if (params.lambda_translation_prior > 0) {
-        t_prior_ = initial_params.t;
-        if (damping_ < 5e-4) {
-            damping_ = 5e-4;
-        }
-    } else {
-        t_prior_ = Eigen::Vector3d::Zero();
-    }
     
     // Ensure coefficient vectors have correct size
     if (params.alpha.size() == 0 && model_->num_identity_components > 0) {
@@ -99,7 +106,7 @@ OptimizationResult GaussNewtonOptimizer::optimize(
     result.energy_history.push_back(result.initial_energy);
     
     if (verbose_) {
-        std::cout << "=== Gauss-Newton Optimization ===" << std::endl;
+        std::cout << "=== Gauss-Newton Optimization (pure GN, strict early stop) ===" << std::endl;
         std::cout << "Initial energy: " << std::fixed << std::setprecision(6) 
                   << result.initial_energy << std::endl;
         std::cout << "Parameters: " << params.numParameters() << std::endl;
@@ -107,15 +114,12 @@ OptimizationResult GaussNewtonOptimizer::optimize(
         std::cout << "  Expression coeffs: " << params.delta.size() << std::endl;
         std::cout << "  Optimize identity: " << params.optimize_identity << std::endl;
         std::cout << "  Optimize expression: " << params.optimize_expression << std::endl;
-        std::cout << "  Optimize rotation: " << params.optimize_rotation << std::endl;
-        std::cout << "  Optimize translation: " << params.optimize_translation << std::endl;
+        std::cout << "  Pose: fixed from Procrustes" << std::endl;
+        std::cout << "  Max iterations: " << params.max_iterations 
+                  << ", convergence threshold: " << params.convergence_threshold << std::endl;
     }
     
     double prev_energy = result.initial_energy;
-    double prev_depth_energy = energy_func_.computeDepthEnergy(params, observed_depth);
-    int depth_not_improving_count = 0;
-    const double z_min_m = 0.5;
-    const double z_max_m = 1.5;
     
     for (int iter = 0; iter < params.max_iterations; ++iter) {
         result.iterations = iter + 1;
@@ -141,38 +145,45 @@ OptimizationResult GaussNewtonOptimizer::optimize(
             break;
         }
         
-        // Build normal equations and add translation prior in the linear system when used
+        // Build normal equations
         Eigen::MatrixXd JtJ = J.transpose() * J;
         Eigen::VectorXd Jtr = J.transpose() * residuals;
-        if (params.lambda_translation_prior > 0 && params.numParameters() >= 3) {
-            int ti = params.numParameters() - 3;
-            JtJ(ti, ti) += params.lambda_translation_prior;
-            JtJ(ti + 1, ti + 1) += params.lambda_translation_prior;
-            JtJ(ti + 2, ti + 2) += params.lambda_translation_prior;
-            Jtr.segment(ti, 3) += params.lambda_translation_prior * (params.t - t_prior_);
-        }
         Eigen::VectorXd delta = solveNormalEquations(JtJ, Jtr);
         
-        // Apply step size
         delta *= params.step_size;
         
-        // Check convergence before update
+        // Check convergence based on delta norm
         if (checkConvergence(delta, params.convergence_threshold)) {
             result.converged = true;
             if (verbose_) {
-                std::cout << "Converged at iteration " << iter + 1 << std::endl;
+                std::cout << "Converged (small delta norm) at iteration " << iter + 1 << std::endl;
             }
             break;
         }
         
-        // Line search: try full step, reduce if energy increases
+        // Line search: try full step, halve up to 5 times
         double best_energy = prev_energy;
         OptimizationParams best_params = params;
+        bool step_accepted = false;
         double step = 1.0;
         
         for (int ls = 0; ls < 5; ++ls) {
             OptimizationParams test_params = params;
             test_params.applyUpdate(delta * step);
+            
+            // Soft Z-range check on mesh centroid (reject step, don't terminate)
+            Eigen::MatrixXd verts = energy_func_.getTransformedVertices(test_params);
+            if (verts.rows() > 0) {
+                double z_centroid = verts.col(2).mean();
+                if (z_centroid < Z_CENTROID_MIN || z_centroid > Z_CENTROID_MAX) {
+                    if (verbose_) {
+                        std::cout << "  Line search step " << ls << ": rejecting (centroid Z="
+                                  << z_centroid << " outside [" << Z_CENTROID_MIN << ", " << Z_CENTROID_MAX << "])" << std::endl;
+                    }
+                    step *= 0.5;
+                    continue;
+                }
+            }
             
             double test_energy = energy_func_.computeTotalEnergy(
                 test_params, landmarks, mapping, observed_depth);
@@ -180,56 +191,32 @@ OptimizationResult GaussNewtonOptimizer::optimize(
             if (test_energy < best_energy) {
                 best_energy = test_energy;
                 best_params = test_params;
+                step_accepted = true;
                 break;
             }
             
             step *= 0.5;
         }
         
-        // Translation clipping: hard-bound drift when prior is used
-        OptimizationParams candidate_params = best_params;
-        if (candidate_params.lambda_translation_prior > 0 && candidate_params.max_translation_delta_m > 0) {
-            double md = candidate_params.max_translation_delta_m;
-            for (int i = 0; i < 3; ++i) {
-                candidate_params.t(i) = std::max(t_prior_(i) - md, std::min(t_prior_(i) + md, candidate_params.t(i)));
+        if (step_accepted) {
+            params = best_params;
+            result.energy_history.push_back(best_energy);
+            result.step_norms.push_back((delta * step).norm());
+        } else {
+            // Stricter early stopping: stop on first line-search failure (no retries)
+            if (verbose_) {
+                std::cout << "  Line search failed; stopping (strict early stop)" << std::endl;
             }
+            result.converged = false;
+            result.energy_history.push_back(prev_energy);
+            result.step_norms.push_back(0.0);
+            break;
         }
-        // Reject step if mesh Z would go out of range [0.5, 1.5] m (keep previous params)
-        Eigen::MatrixXd verts = energy_func_.getTransformedVertices(candidate_params);
-        if (verts.rows() > 0) {
-            double z_min = verts.col(2).minCoeff();
-            double z_max = verts.col(2).maxCoeff();
-            if (z_min < z_min_m || z_max > z_max_m) {
-                if (verbose_) {
-                    std::cout << "Early stop: rejecting step (mesh Z [" << z_min << ", " << z_max
-                              << "] outside [" << z_min_m << ", " << z_max_m << "] m); keeping previous pose at iteration "
-                              << iter + 1 << std::endl;
-                }
-                result.converged = true;
-                break;
-            }
-        }
-        params = candidate_params;
-        result.energy_history.push_back(best_energy);
-        result.step_norms.push_back((delta * step).norm());
+        
         // Compute per-term energies for logging
         double lm_energy = energy_func_.computeLandmarkEnergy(params, landmarks, mapping);
         double depth_energy = energy_func_.computeDepthEnergy(params, observed_depth);
         double reg_energy = energy_func_.computeRegularization(params);
-        // Week 6: Early stop if depth term not improving (2 consecutive increases)
-        if (depth_energy > prev_depth_energy) {
-            depth_not_improving_count++;
-            if (depth_not_improving_count >= 2) {
-                if (verbose_) {
-                    std::cout << "Early stop: depth term not improving at iteration " << iter + 1 << std::endl;
-                }
-                result.converged = true;
-                break;
-            }
-        } else {
-            depth_not_improving_count = 0;
-        }
-        prev_depth_energy = depth_energy;
         
         if (verbose_ || iter < 10 || iter % 5 == 0) {
             std::cout << "Iter " << std::setw(3) << iter + 1 << ": "
@@ -238,13 +225,12 @@ OptimizationResult GaussNewtonOptimizer::optimize(
                       << ", depth=" << depth_energy
                       << ", reg=" << reg_energy << "), "
                       << "step_norm=" << std::setprecision(4) << (delta * step).norm()
-                      << ", damping=" << std::setprecision(2) << damping_
                       << std::endl;
         }
         
-        // Check for minimal progress
+        // Check for minimal relative energy progress
         double energy_change = std::abs(prev_energy - best_energy);
-        if (energy_change < params.convergence_threshold * prev_energy) {
+        if (prev_energy > 0 && energy_change < params.convergence_threshold * prev_energy) {
             result.converged = true;
             if (verbose_) {
                 std::cout << "Converged (minimal energy change) at iteration " 
@@ -265,7 +251,6 @@ OptimizationResult GaussNewtonOptimizer::optimize(
     result.depth_energy = energy_func_.computeDepthEnergy(params, observed_depth);
     result.depth_valid_count = energy_func_.computeDepthValidCount(params, observed_depth);
     result.regularization_energy = energy_func_.computeRegularization(params);
-    result.damping_used = damping_;
     if (!result.step_norms.empty()) {
         result.final_step_norm = result.step_norms.back();
     }
@@ -278,9 +263,26 @@ OptimizationResult GaussNewtonOptimizer::optimize(
         std::cout << "  Regularization: " << result.regularization_energy << std::endl;
         std::cout << "Iterations: " << result.iterations << std::endl;
         std::cout << "Converged: " << (result.converged ? "Yes" : "No") << std::endl;
-        std::cout << "Energy reduction: " 
-                  << (1.0 - result.final_energy / result.initial_energy) * 100.0 
-                  << "%" << std::endl;
+        // Interpretable metrics: landmark RMSE (px), depth scale
+        int num_mapped = 0;
+        for (size_t i = 0; i < landmarks.size(); ++i) {
+            if (mapping.hasMapping(static_cast<int>(i))) ++num_mapped;
+        }
+        if (num_mapped > 0 && result.landmark_energy >= 0) {
+            const double LM_SIGMA_PX = 2.0;
+            double lm_rmse_px = LM_SIGMA_PX * std::sqrt(result.landmark_energy / (2 * num_mapped));
+            std::cout << "  Landmark RMSE (approx): " << std::fixed << std::setprecision(2) 
+                      << lm_rmse_px << " px (over " << num_mapped << " landmarks, sigma=" << LM_SIGMA_PX << " px)" << std::endl;
+        }
+        if (result.depth_valid_count > 0) {
+            std::cout << "  Depth: " << result.depth_valid_count << " valid samples, raw energy " 
+                      << std::fixed << std::setprecision(2) << result.depth_energy << " (Huber; lambda_depth scales contribution)" << std::endl;
+        }
+        if (result.initial_energy > 0) {
+            std::cout << "Energy reduction: " 
+                      << (1.0 - result.final_energy / result.initial_energy) * 100.0 
+                      << "%" << std::endl;
+        }
     }
     
     return result;

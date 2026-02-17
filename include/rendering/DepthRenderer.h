@@ -23,13 +23,12 @@ public:
     void initialize(const CameraIntrinsics& intrinsics, int width, int height);
     
     /**
-     * Render depth map from 3D vertices and faces
-     * @param vertices N x 3 matrix of 3D vertices
-     * @param faces F x 3 matrix of face indices (triangles)
-     * @return Rendered depth map (CV_32F, same size as initialized)
+     * Render depth map from 3D vertices and faces.
+     * @param roi If non-empty, only rasterize triangles overlapping this region (faster when face is small).
      */
-    cv::Mat renderDepth(const Eigen::MatrixXd& vertices, 
-                        const Eigen::MatrixXi& faces) const;
+    cv::Mat renderDepth(const Eigen::MatrixXd& vertices,
+                        const Eigen::MatrixXi& faces,
+                        const cv::Rect& roi = cv::Rect()) const;
     
     /**
      * Render depth map from 3D vertices only (point cloud, no faces)
@@ -62,11 +61,13 @@ private:
     Eigen::Vector2d projectPoint(const Eigen::Vector3d& point) const;
     
     /**
-     * Rasterize a single triangle
+     * Rasterize a single triangle. roi_* clamp the pixel loop when set (>=0).
      */
-    void rasterizeTriangle(const Eigen::Vector3d& v0, const Eigen::Vector3d& v1, 
+    void rasterizeTriangle(const Eigen::Vector3d& v0, const Eigen::Vector3d& v1,
                           const Eigen::Vector3d& v2,
-                          cv::Mat& depth_map) const;
+                          cv::Mat& depth_map,
+                          int roi_min_u = -1, int roi_max_u = -1,
+                          int roi_min_v = -1, int roi_max_v = -1) const;
     
     /**
      * Check if point is within image bounds

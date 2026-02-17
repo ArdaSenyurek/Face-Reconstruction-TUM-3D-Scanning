@@ -5,8 +5,11 @@
 #include "landmarks/LandmarkData.h"
 #include "alignment/LandmarkMapping.h"
 #include "camera/CameraIntrinsics.h"
+#include "rendering/DepthRenderer.h"
 #include <opencv2/core.hpp>
 #include <Eigen/Dense>
+#include <vector>
+#include <utility>
 
 namespace face_reconstruction {
 
@@ -98,18 +101,48 @@ public:
     
     /**
      * Compute Jacobian matrix using numerical differentiation.
-     * 
-     * @param params Current optimization parameters
-     * @param landmarks Detected 2D landmarks
-     * @param mapping Landmark to vertex mapping
-     * @param observed_depth Observed depth map
-     * @return Jacobian matrix (num_residuals x num_params)
+     * Uses a fixed pixel set for depth residuals to guarantee consistent
+     * residual vector sizes across parameter perturbations.
      */
     Eigen::MatrixXd computeJacobian(
         const OptimizationParams& params,
         const LandmarkData& landmarks,
         const LandmarkMapping& mapping,
         const cv::Mat& observed_depth) const;
+
+    /** Pixel coordinate pair (u, v). */
+    using PixelCoord = std::pair<int, int>;
+
+    /**
+     * Collect the set of valid depth pixel coordinates at the current params.
+     * If out_baseline_rendered is non-null, fills it with the rendered depth used (avoids re-render in computeJacobian).
+     */
+    std::vector<PixelCoord> collectDepthPixels(
+        const OptimizationParams& params,
+        const cv::Mat& observed_depth,
+        cv::Mat* out_baseline_rendered = nullptr) const;
+
+    /**
+     * Compute depth residuals at a fixed set of pixel coordinates.
+     * If pre_rendered is non-empty and same size as depth map, use it instead of rendering (saves one render when at baseline).
+     */
+    Eigen::VectorXd computeDepthResidualsFixed(
+        const OptimizationParams& params,
+        const cv::Mat& observed_depth,
+        const std::vector<PixelCoord>& pixels,
+        const cv::Mat& pre_rendered = cv::Mat()) const;
+
+    /**
+     * Compute the full stacked residual vector using a fixed depth pixel set.
+     * If baseline_rendered is non-empty, use it for the depth part instead of re-rendering.
+     */
+    Eigen::VectorXd computeResidualsFixed(
+        const OptimizationParams& params,
+        const LandmarkData& landmarks,
+        const LandmarkMapping& mapping,
+        const cv::Mat& observed_depth,
+        const std::vector<PixelCoord>& depth_pixels,
+        const cv::Mat& baseline_rendered = cv::Mat()) const;
     
     /**
      * Week 6: Get mesh vertices in camera space (for early-stop Z range check).
@@ -117,9 +150,21 @@ public:
     Eigen::MatrixXd getTransformedVertices(const OptimizationParams& params) const;
 
     /**
-     * Set translation prior (previous frame pose) for tracking; penalizes ||t - t_prior||^2 when lambda_translation_prior > 0.
+     * Set depth mask (CV_8U). Only pixels where mask != 0 are used for depth residuals.
      */
-    void setTranslationPrior(const Eigen::Vector3d& t_prior);
+    void setDepthMask(const cv::Mat& mask);
+
+    /**
+     * Set depth sampling step (sample every Nth pixel). Higher = faster, less coverage. Default 8.
+     */
+    void setDepthSampleStep(int step) { depth_sample_step_ = (step > 0) ? step : 1; }
+
+    /**
+     * Build a rectangular ROI mask from landmark bounding box, expanded by margin pixels.
+     * Returns a CV_8U mask (255 inside ROI, 0 outside).
+     */
+    static cv::Mat buildLandmarkRoiMask(
+        const LandmarkData& landmarks, int W, int H, int margin = 40);
 
 private:
     const MorphableModel* model_ = nullptr;
@@ -132,11 +177,14 @@ private:
     double epsilon_ = 1e-6;
     
     // Depth sampling parameters (for efficiency)
-    int depth_sample_step_ = 16;  // Sample every Nth pixel (higher = faster)
+    int depth_sample_step_ = 8;  // Sample every Nth pixel (higher = faster, lower = more coverage)
 
-    // Translation prior for tracking (reduce drift)
-    Eigen::Vector3d t_prior_ = Eigen::Vector3d::Zero();
-    bool use_translation_prior_ = false;
+    // Face ROI mask for depth residuals (always on when set)
+    cv::Mat depth_mask_;
+    bool has_mask_ = false;
+    
+    // Reused depth renderer (avoid creating 100+ per iteration)
+    mutable DepthRenderer depth_renderer_;
     
     /**
      * Reconstruct face mesh with given parameters
@@ -178,16 +226,6 @@ private:
      * Compute regularization residuals
      */
     Eigen::VectorXd computeRegResiduals(const OptimizationParams& params) const;
-
-    /**
-     * Compute translation prior energy: lambda * ||t - t_prior||^2
-     */
-    double computeTranslationPriorEnergy(const OptimizationParams& params) const;
-
-    /**
-     * Compute translation prior residuals: sqrt(lambda) * (t - t_prior) for Gauss-Newton
-     */
-    Eigen::VectorXd computeTranslationPriorResiduals(const OptimizationParams& params) const;
 };
 
 } // namespace face_reconstruction

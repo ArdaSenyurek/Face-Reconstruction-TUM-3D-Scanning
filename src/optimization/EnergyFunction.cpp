@@ -2,8 +2,8 @@
  * Energy Function Implementation
  * 
  * Computes energy terms for face reconstruction optimization:
- * - Sparse landmark reprojection error
- * - Dense depth alignment error
+ * - Sparse landmark reprojection error (noise-normalized)
+ * - Dense depth alignment error (masked + gated + robust Huber)
  * - Coefficient regularization
  */
 
@@ -11,8 +11,14 @@
 #include "rendering/DepthRenderer.h"
 #include <cmath>
 #include <iostream>
+#include <algorithm>
 
 namespace face_reconstruction {
+
+// Hardcoded robust constants (no CLI flags)
+static constexpr float DEPTH_SIGMA_M = 0.01f;   // 10 mm depth noise for normalization
+static constexpr float HUBER_K       = 1.345f;   // Huber threshold in sigma units
+static constexpr float LM_SIGMA_PX   = 2.0f;    // Landmark detection noise in pixels
 
 void EnergyFunction::initialize(const MorphableModel& model,
                                 const CameraIntrinsics& intrinsics,
@@ -21,12 +27,39 @@ void EnergyFunction::initialize(const MorphableModel& model,
     intrinsics_ = intrinsics;
     image_width_ = image_width;
     image_height_ = image_height;
+    depth_renderer_.initialize(intrinsics_, image_width_, image_height_);
     initialized_ = true;
 }
 
-void EnergyFunction::setTranslationPrior(const Eigen::Vector3d& t_prior) {
-    t_prior_ = t_prior;
-    use_translation_prior_ = true;
+void EnergyFunction::setDepthMask(const cv::Mat& mask) {
+    depth_mask_ = mask.clone();
+    has_mask_ = true;
+}
+
+cv::Mat EnergyFunction::buildLandmarkRoiMask(
+    const LandmarkData& landmarks, int W, int H, int margin) {
+    cv::Mat mask = cv::Mat::zeros(H, W, CV_8U);
+    if (landmarks.size() == 0) return mask;
+
+    double min_x = W, max_x = 0, min_y = H, max_y = 0;
+    for (size_t i = 0; i < landmarks.size(); ++i) {
+        const auto& lm = landmarks[i];
+        if (lm.x >= 0 && lm.x < W && lm.y >= 0 && lm.y < H) {
+            min_x = std::min(min_x, lm.x);
+            max_x = std::max(max_x, lm.x);
+            min_y = std::min(min_y, lm.y);
+            max_y = std::max(max_y, lm.y);
+        }
+    }
+
+    int x0 = std::max(0, static_cast<int>(min_x) - margin);
+    int y0 = std::max(0, static_cast<int>(min_y) - margin);
+    int x1 = std::min(W - 1, static_cast<int>(max_x) + margin);
+    int y1 = std::min(H - 1, static_cast<int>(max_y) + margin);
+
+    cv::rectangle(mask, cv::Point(x0, y0), cv::Point(x1, y1),
+                  cv::Scalar(255), cv::FILLED);
+    return mask;
 }
 
 Eigen::MatrixXd EnergyFunction::reconstructMesh(const OptimizationParams& params) const {
@@ -38,8 +71,6 @@ Eigen::MatrixXd EnergyFunction::reconstructMesh(const OptimizationParams& params
 
 Eigen::MatrixXd EnergyFunction::applyPose(const Eigen::MatrixXd& vertices,
                                           const OptimizationParams& params) const {
-    // Apply similarity transform: v' = scale * R * v + t
-    // Scale converts BFM millimeters to camera meters
     Eigen::MatrixXd transformed(vertices.rows(), 3);
     for (int i = 0; i < vertices.rows(); ++i) {
         Eigen::Vector3d v = vertices.row(i).transpose();
@@ -56,7 +87,6 @@ Eigen::MatrixXd EnergyFunction::getTransformedVertices(const OptimizationParams&
 }
 
 Eigen::Vector2d EnergyFunction::projectPoint(const Eigen::Vector3d& point) const {
-    // Pinhole projection: u = fx * X/Z + cx, v = fy * Y/Z + cy
     if (point.z() <= 0.0) {
         return Eigen::Vector2d(-1, -1);
     }
@@ -67,7 +97,6 @@ Eigen::Vector2d EnergyFunction::projectPoint(const Eigen::Vector3d& point) const
 
 cv::Mat EnergyFunction::renderDepth(const Eigen::MatrixXd& vertices) const {
     if (!model_ || model_->faces.rows() == 0) {
-        // No faces - use point-based rendering
         cv::Mat depth(image_height_, image_width_, CV_32F, cv::Scalar(0.0f));
         for (int i = 0; i < vertices.rows(); ++i) {
             Eigen::Vector3d point = vertices.row(i);
@@ -85,11 +114,16 @@ cv::Mat EnergyFunction::renderDepth(const Eigen::MatrixXd& vertices) const {
         return depth;
     }
     
-    // Use DepthRenderer for mesh rendering
-    DepthRenderer renderer;
-    renderer.initialize(intrinsics_, image_width_, image_height_);
-    return renderer.renderDepth(vertices, model_->faces);
+    cv::Rect roi;
+    if (has_mask_ && !depth_mask_.empty()) {
+        roi = cv::boundingRect(depth_mask_);
+    }
+    return depth_renderer_.renderDepth(vertices, model_->faces, roi);
 }
+
+// ---------------------------------------------------------------------------
+// Landmark energy (noise-normalized by LM_SIGMA_PX)
+// ---------------------------------------------------------------------------
 
 double EnergyFunction::computeLandmarkEnergy(
     const OptimizationParams& params,
@@ -98,7 +132,6 @@ double EnergyFunction::computeLandmarkEnergy(
     
     if (!initialized_ || !model_) return 0.0;
     
-    // Reconstruct and transform mesh
     Eigen::MatrixXd vertices = reconstructMesh(params);
     if (vertices.rows() == 0) return 0.0;
     
@@ -113,21 +146,23 @@ double EnergyFunction::computeLandmarkEnergy(
         int vertex_idx = mapping.getModelVertex(lm_idx);
         if (vertex_idx < 0 || vertex_idx >= transformed.rows()) continue;
         
-        // Get 3D vertex and project to 2D
         Eigen::Vector3d vertex_3d = transformed.row(vertex_idx);
         Eigen::Vector2d projected = projectPoint(vertex_3d);
         
-        if (projected.x() < 0) continue;  // Behind camera
+        if (projected.x() < 0) continue;
         
-        // Compute reprojection error
         const auto& lm = landmarks[i];
         double dx = projected.x() - lm.x;
         double dy = projected.y() - lm.y;
-        energy += dx * dx + dy * dy;
+        energy += (dx * dx + dy * dy) / (LM_SIGMA_PX * LM_SIGMA_PX);
     }
     
     return energy;
 }
+
+// ---------------------------------------------------------------------------
+// Depth energy (masked + gated + Huber robust)
+// ---------------------------------------------------------------------------
 
 double EnergyFunction::computeDepthEnergy(
     const OptimizationParams& params,
@@ -136,29 +171,31 @@ double EnergyFunction::computeDepthEnergy(
     if (!initialized_ || !model_) return 0.0;
     if (observed_depth.empty()) return 0.0;
     
-    // Reconstruct and transform mesh
     Eigen::MatrixXd vertices = reconstructMesh(params);
     if (vertices.rows() == 0) return 0.0;
     
     Eigen::MatrixXd transformed = applyPose(vertices, params);
-    
-    // Render depth
     cv::Mat rendered = renderDepth(transformed);
     
     double energy = 0.0;
     
-    // Compare rendered vs observed depth
     for (int v = 0; v < image_height_; v += depth_sample_step_) {
         for (int u = 0; u < image_width_; u += depth_sample_step_) {
             float obs_d = observed_depth.at<float>(v, u);
             float rend_d = rendered.at<float>(v, u);
             
-            // Skip invalid pixels
             if (obs_d <= 0 || rend_d <= 0) continue;
             if (std::isnan(obs_d) || std::isnan(rend_d)) continue;
+            if (has_mask_ && depth_mask_.at<uchar>(v, u) == 0) continue;
             
-            double diff = obs_d - rend_d;
-            energy += diff * diff;
+            float diff = obs_d - rend_d;
+            double e = diff / DEPTH_SIGMA_M;
+            double abs_e = std::abs(e);
+            if (abs_e <= HUBER_K) {
+                energy += 0.5 * e * e;
+            } else {
+                energy += HUBER_K * abs_e - 0.5 * HUBER_K * HUBER_K;
+            }
         }
     }
     
@@ -179,19 +216,24 @@ int EnergyFunction::computeDepthValidCount(
         for (int u = 0; u < image_width_; u += depth_sample_step_) {
             float obs_d = observed_depth.at<float>(v, u);
             float rend_d = rendered.at<float>(v, u);
-            if (obs_d > 0 && rend_d > 0 && !std::isnan(obs_d) && !std::isnan(rend_d))
-                count++;
+            if (obs_d <= 0 || rend_d <= 0) continue;
+            if (std::isnan(obs_d) || std::isnan(rend_d)) continue;
+            if (has_mask_ && depth_mask_.at<uchar>(v, u) == 0) continue;
+            count++;
         }
     }
     return count;
 }
+
+// ---------------------------------------------------------------------------
+// Regularization (unchanged)
+// ---------------------------------------------------------------------------
 
 double EnergyFunction::computeRegularization(const OptimizationParams& params) const {
     if (!initialized_ || !model_) return 0.0;
     
     double energy = 0.0;
     
-    // Identity regularization: ||alpha / sigma_alpha||^2
     if (params.alpha.size() > 0 && model_->identity_stddev.size() > 0) {
         for (int i = 0; i < params.alpha.size() && i < model_->identity_stddev.size(); ++i) {
             double sigma = model_->identity_stddev(i);
@@ -202,7 +244,6 @@ double EnergyFunction::computeRegularization(const OptimizationParams& params) c
         }
     }
     
-    // Expression regularization: ||delta / sigma_delta||^2
     if (params.delta.size() > 0 && model_->expression_stddev.size() > 0) {
         for (int i = 0; i < params.delta.size() && i < model_->expression_stddev.size(); ++i) {
             double sigma = model_->expression_stddev(i);
@@ -225,12 +266,15 @@ double EnergyFunction::computeTotalEnergy(
     double e_landmark = computeLandmarkEnergy(params, landmarks, mapping);
     double e_depth = computeDepthEnergy(params, observed_depth);
     double e_reg = computeRegularization(params);
-    double e_prior = computeTranslationPriorEnergy(params);
     
     return params.lambda_landmark * e_landmark + 
            params.lambda_depth * e_depth + 
-           e_reg + e_prior;
+           e_reg;
 }
+
+// ---------------------------------------------------------------------------
+// Landmark residuals (noise-normalized by LM_SIGMA_PX)
+// ---------------------------------------------------------------------------
 
 Eigen::VectorXd EnergyFunction::computeLandmarkResiduals(
     const OptimizationParams& params,
@@ -239,13 +283,11 @@ Eigen::VectorXd EnergyFunction::computeLandmarkResiduals(
     
     if (!initialized_ || !model_) return Eigen::VectorXd();
     
-    // Reconstruct and transform mesh
     Eigen::MatrixXd vertices = reconstructMesh(params);
     if (vertices.rows() == 0) return Eigen::VectorXd();
     
     Eigen::MatrixXd transformed = applyPose(vertices, params);
     
-    // Count valid landmarks
     int num_valid = 0;
     for (size_t i = 0; i < landmarks.size(); ++i) {
         if (mapping.hasMapping(static_cast<int>(i))) {
@@ -256,7 +298,6 @@ Eigen::VectorXd EnergyFunction::computeLandmarkResiduals(
         }
     }
     
-    // Compute residuals (2 per landmark: x and y)
     Eigen::VectorXd residuals(num_valid * 2);
     int idx = 0;
     
@@ -274,8 +315,8 @@ Eigen::VectorXd EnergyFunction::computeLandmarkResiduals(
         double weight = std::sqrt(params.lambda_landmark);
         
         if (projected.x() >= 0) {
-            residuals(idx * 2) = weight * (projected.x() - lm.x);
-            residuals(idx * 2 + 1) = weight * (projected.y() - lm.y);
+            residuals(idx * 2)     = weight * (projected.x() - lm.x) / LM_SIGMA_PX;
+            residuals(idx * 2 + 1) = weight * (projected.y() - lm.y) / LM_SIGMA_PX;
         } else {
             residuals(idx * 2) = 0;
             residuals(idx * 2 + 1) = 0;
@@ -286,6 +327,10 @@ Eigen::VectorXd EnergyFunction::computeLandmarkResiduals(
     return residuals;
 }
 
+// ---------------------------------------------------------------------------
+// Depth residuals (masked + Huber IRLS weight, noise-normalized, no hard gate)
+// ---------------------------------------------------------------------------
+
 Eigen::VectorXd EnergyFunction::computeDepthResiduals(
     const OptimizationParams& params,
     const cv::Mat& observed_depth) const {
@@ -294,14 +339,12 @@ Eigen::VectorXd EnergyFunction::computeDepthResiduals(
         return Eigen::VectorXd();
     }
     
-    // Reconstruct and transform mesh
     Eigen::MatrixXd vertices = reconstructMesh(params);
     if (vertices.rows() == 0) return Eigen::VectorXd();
     
     Eigen::MatrixXd transformed = applyPose(vertices, params);
     cv::Mat rendered = renderDepth(transformed);
     
-    // Count valid depth points
     std::vector<double> residual_list;
     double weight = std::sqrt(params.lambda_depth);
     
@@ -310,10 +353,15 @@ Eigen::VectorXd EnergyFunction::computeDepthResiduals(
             float obs_d = observed_depth.at<float>(v, u);
             float rend_d = rendered.at<float>(v, u);
             
-            if (obs_d > 0 && rend_d > 0 && 
-                !std::isnan(obs_d) && !std::isnan(rend_d)) {
-                residual_list.push_back(weight * (obs_d - rend_d));
-            }
+            if (obs_d <= 0 || rend_d <= 0) continue;
+            if (std::isnan(obs_d) || std::isnan(rend_d)) continue;
+            if (has_mask_ && depth_mask_.at<uchar>(v, u) == 0) continue;
+            
+            float diff = obs_d - rend_d;
+            double e = diff / DEPTH_SIGMA_M;
+            double abs_e = std::abs(e);
+            double w = (abs_e <= HUBER_K) ? 1.0 : (HUBER_K / abs_e);
+            residual_list.push_back(weight * std::sqrt(w) * e);
         }
     }
     
@@ -325,6 +373,10 @@ Eigen::VectorXd EnergyFunction::computeDepthResiduals(
     return residuals;
 }
 
+// ---------------------------------------------------------------------------
+// Regularization residuals (unchanged)
+// ---------------------------------------------------------------------------
+
 Eigen::VectorXd EnergyFunction::computeRegResiduals(const OptimizationParams& params) const {
     if (!initialized_ || !model_) return Eigen::VectorXd();
     
@@ -333,7 +385,6 @@ Eigen::VectorXd EnergyFunction::computeRegResiduals(const OptimizationParams& pa
     
     Eigen::VectorXd residuals(num_alpha + num_delta);
     
-    // Identity regularization residuals
     for (int i = 0; i < num_alpha; ++i) {
         double sigma = (i < model_->identity_stddev.size()) ? 
                        model_->identity_stddev(i) : 1.0;
@@ -341,7 +392,6 @@ Eigen::VectorXd EnergyFunction::computeRegResiduals(const OptimizationParams& pa
         residuals(i) = std::sqrt(params.lambda_alpha) * params.alpha(i) / sigma;
     }
     
-    // Expression regularization residuals
     for (int i = 0; i < num_delta; ++i) {
         double sigma = (i < model_->expression_stddev.size()) ? 
                        model_->expression_stddev(i) : 1.0;
@@ -352,24 +402,119 @@ Eigen::VectorXd EnergyFunction::computeRegResiduals(const OptimizationParams& pa
     return residuals;
 }
 
-double EnergyFunction::computeTranslationPriorEnergy(const OptimizationParams& params) const {
-    if (!use_translation_prior_ || params.lambda_translation_prior <= 0.0) {
-        return 0.0;
+// ---------------------------------------------------------------------------
+// Fixed-pixel-set depth methods (for stable Jacobian computation)
+// ---------------------------------------------------------------------------
+
+std::vector<EnergyFunction::PixelCoord> EnergyFunction::collectDepthPixels(
+    const OptimizationParams& params,
+    const cv::Mat& observed_depth,
+    cv::Mat* out_baseline_rendered) const {
+    
+    std::vector<PixelCoord> pixels;
+    if (!initialized_ || !model_ || observed_depth.empty()) return pixels;
+    
+    Eigen::MatrixXd vertices = reconstructMesh(params);
+    if (vertices.rows() == 0) return pixels;
+    
+    Eigen::MatrixXd transformed = applyPose(vertices, params);
+    cv::Mat rendered = renderDepth(transformed);
+    if (out_baseline_rendered && rendered.rows == image_height_ && rendered.cols == image_width_) {
+        rendered.copyTo(*out_baseline_rendered);
     }
-    return params.lambda_translation_prior * (params.t - t_prior_).squaredNorm();
+    
+    for (int v = 0; v < image_height_; v += depth_sample_step_) {
+        for (int u = 0; u < image_width_; u += depth_sample_step_) {
+            float obs_d = observed_depth.at<float>(v, u);
+            float rend_d = rendered.at<float>(v, u);
+            if (obs_d <= 0 || rend_d <= 0) continue;
+            if (std::isnan(obs_d) || std::isnan(rend_d)) continue;
+            if (has_mask_ && depth_mask_.at<uchar>(v, u) == 0) continue;
+            pixels.emplace_back(u, v);
+        }
+    }
+    return pixels;
 }
 
-Eigen::VectorXd EnergyFunction::computeTranslationPriorResiduals(const OptimizationParams& params) const {
-    if (!use_translation_prior_ || params.lambda_translation_prior <= 0.0) {
-        return Eigen::VectorXd(0);
+Eigen::VectorXd EnergyFunction::computeDepthResidualsFixed(
+    const OptimizationParams& params,
+    const cv::Mat& observed_depth,
+    const std::vector<PixelCoord>& pixels,
+    const cv::Mat& pre_rendered) const {
+    
+    if (!initialized_ || !model_ || observed_depth.empty() || pixels.empty()) {
+        return Eigen::VectorXd(static_cast<int>(pixels.size()));
     }
-    double w = std::sqrt(params.lambda_translation_prior);
-    Eigen::VectorXd r(3);
-    r(0) = w * (params.t(0) - t_prior_(0));
-    r(1) = w * (params.t(1) - t_prior_(1));
-    r(2) = w * (params.t(2) - t_prior_(2));
-    return r;
+    
+    cv::Mat rendered;
+    if (pre_rendered.rows == image_height_ && pre_rendered.cols == image_width_) {
+        rendered = pre_rendered;
+    } else {
+        Eigen::MatrixXd vertices = reconstructMesh(params);
+        if (vertices.rows() == 0) {
+            return Eigen::VectorXd::Zero(static_cast<int>(pixels.size()));
+        }
+        Eigen::MatrixXd transformed = applyPose(vertices, params);
+        rendered = renderDepth(transformed);
+    }
+    
+    double weight = std::sqrt(params.lambda_depth);
+    Eigen::VectorXd residuals(static_cast<int>(pixels.size()));
+    
+    for (size_t i = 0; i < pixels.size(); ++i) {
+        int u = pixels[i].first;
+        int v = pixels[i].second;
+        float obs_d = observed_depth.at<float>(v, u);
+        float rend_d = rendered.at<float>(v, u);
+        
+        if (obs_d <= 0 || rend_d <= 0 || std::isnan(obs_d) || std::isnan(rend_d)) {
+            residuals(static_cast<int>(i)) = 0.0;
+            continue;
+        }
+        
+        float diff = obs_d - rend_d;
+        double e = diff / DEPTH_SIGMA_M;
+        double abs_e = std::abs(e);
+        double w = (abs_e <= HUBER_K) ? 1.0 : (HUBER_K / abs_e);
+        residuals(static_cast<int>(i)) = weight * std::sqrt(w) * e;
+    }
+    
+    return residuals;
 }
+
+Eigen::VectorXd EnergyFunction::computeResidualsFixed(
+    const OptimizationParams& params,
+    const LandmarkData& landmarks,
+    const LandmarkMapping& mapping,
+    const cv::Mat& observed_depth,
+    const std::vector<PixelCoord>& depth_pixels,
+    const cv::Mat& baseline_rendered) const {
+    
+    Eigen::VectorXd lm_residuals = computeLandmarkResiduals(params, landmarks, mapping);
+    Eigen::VectorXd depth_residuals = computeDepthResidualsFixed(params, observed_depth, depth_pixels, baseline_rendered);
+    Eigen::VectorXd reg_residuals = computeRegResiduals(params);
+    
+    int total_size = lm_residuals.size() + depth_residuals.size() + reg_residuals.size();
+    Eigen::VectorXd residuals(total_size);
+    
+    int idx = 0;
+    if (lm_residuals.size() > 0) {
+        residuals.segment(idx, lm_residuals.size()) = lm_residuals;
+        idx += lm_residuals.size();
+    }
+    if (depth_residuals.size() > 0) {
+        residuals.segment(idx, depth_residuals.size()) = depth_residuals;
+        idx += depth_residuals.size();
+    }
+    if (reg_residuals.size() > 0) {
+        residuals.segment(idx, reg_residuals.size()) = reg_residuals;
+    }
+    return residuals;
+}
+
+// ---------------------------------------------------------------------------
+// Combined residuals + Jacobian
+// ---------------------------------------------------------------------------
 
 Eigen::VectorXd EnergyFunction::computeResiduals(
     const OptimizationParams& params,
@@ -380,7 +525,7 @@ Eigen::VectorXd EnergyFunction::computeResiduals(
     Eigen::VectorXd lm_residuals = computeLandmarkResiduals(params, landmarks, mapping);
     Eigen::VectorXd depth_residuals = computeDepthResiduals(params, observed_depth);
     Eigen::VectorXd reg_residuals = computeRegResiduals(params);
-    // Prior is applied in the normal equations (GaussNewton), not as residuals, to avoid scale imbalance
+    
     int total_size = lm_residuals.size() + depth_residuals.size() + reg_residuals.size();
     Eigen::VectorXd residuals(total_size);
     
@@ -405,8 +550,11 @@ Eigen::MatrixXd EnergyFunction::computeJacobian(
     const LandmarkMapping& mapping,
     const cv::Mat& observed_depth) const {
     
-    // Compute residuals at current point
-    Eigen::VectorXd r0 = computeResiduals(params, landmarks, mapping, observed_depth);
+    // Collect the valid depth pixel set ONCE at the baseline parameters and reuse the baseline render for r0.
+    cv::Mat baseline_rendered;
+    std::vector<PixelCoord> depth_pixels = collectDepthPixels(params, observed_depth, &baseline_rendered);
+    
+    Eigen::VectorXd r0 = computeResidualsFixed(params, landmarks, mapping, observed_depth, depth_pixels, baseline_rendered);
     int num_residuals = r0.size();
     int num_params = params.numParameters();
     
@@ -415,23 +563,17 @@ Eigen::MatrixXd EnergyFunction::computeJacobian(
     }
     
     Eigen::MatrixXd J(num_residuals, num_params);
-    
-    // Numerical differentiation: J_ij = (r_i(p + eps*e_j) - r_i(p)) / eps
     Eigen::VectorXd p0 = params.pack();
     
     for (int j = 0; j < num_params; ++j) {
-        // Perturb parameter j
         Eigen::VectorXd p_plus = p0;
         p_plus(j) += epsilon_;
         
-        // Create perturbed params
         OptimizationParams params_plus = params;
         params_plus.unpack(p_plus);
         
-        // Compute perturbed residuals
-        Eigen::VectorXd r_plus = computeResiduals(params_plus, landmarks, mapping, observed_depth);
+        Eigen::VectorXd r_plus = computeResidualsFixed(params_plus, landmarks, mapping, observed_depth, depth_pixels);
         
-        // Finite difference
         J.col(j) = (r_plus - r0) / epsilon_;
     }
     

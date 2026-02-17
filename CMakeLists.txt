@@ -19,7 +19,7 @@ set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 # Ensure object-file directories exist before build (avoids "rename failed: No such file or directory"
 # when the compiler writes .tmp and renames to .o, especially with parallel builds or fresh config)
 set(_obj_subdirs src/data src/camera src/utils src/model src/landmarks src/alignment src/rendering src/optimization src/tools tests)
-set(_targets_with_shared_sources face_reconstruction pose_init create_overlays test_depth_lifting test_landmarks_io test_pose_init test_landmark_mapping test_depth_renderer test_depth_residuals test_icp_validation)
+set(_targets_with_shared_sources face_reconstruction pose_init create_overlays test_depth_lifting test_landmarks_io test_pose_init test_landmark_mapping test_depth_renderer test_depth_residuals test_expression_influence test_coefficient_clipping)
 foreach(_t ${_targets_with_shared_sources})
   foreach(_d ${_obj_subdirs})
     file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/CMakeFiles/${_t}.dir/${_d}")
@@ -68,7 +68,6 @@ set(CORE_SOURCES
     src/landmarks/LandmarkData.cpp
     src/alignment/Procrustes.cpp
     src/alignment/LandmarkMapping.cpp
-    src/alignment/ICP.cpp
     src/rendering/DepthRenderer.cpp
 )
 
@@ -94,7 +93,6 @@ set(HEADERS
     include/landmarks/LandmarkData.h
     include/alignment/Procrustes.h
     include/alignment/LandmarkMapping.h
-    include/alignment/ICP.h
     include/rendering/DepthRenderer.h
     include/optimization/Parameters.h
     include/optimization/EnergyFunction.h
@@ -207,8 +205,28 @@ add_project_executable(test_depth_renderer tests/test_depth_renderer.cpp)
 # STEP 4: Depth Residual Computation
 add_project_executable(test_depth_residuals tests/test_depth_residuals.cpp)
 
-# STEP 5: ICP Validation
-add_project_executable(test_icp_validation tests/test_icp_validation.cpp)
+# Expression influence test (model-only, no OpenCV needed)
+add_executable(test_expression_influence
+    tests/test_expression_influence.cpp
+    src/model/MorphableModel.cpp
+)
+target_link_libraries(test_expression_influence Eigen3::Eigen)
+target_include_directories(test_expression_influence PUBLIC ${CMAKE_SOURCE_DIR}/include)
+if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+    target_compile_options(test_expression_influence PRIVATE -Wall -Wextra)
+endif()
+
+# Coefficient clipping test (model-only, no OpenCV needed)
+add_executable(test_coefficient_clipping
+    tests/test_coefficient_clipping.cpp
+    src/model/MorphableModel.cpp
+    src/optimization/Parameters.cpp
+)
+target_link_libraries(test_coefficient_clipping Eigen3::Eigen)
+target_include_directories(test_coefficient_clipping PUBLIC ${CMAKE_SOURCE_DIR}/include)
+if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+    target_compile_options(test_coefficient_clipping PRIVATE -Wall -Wextra)
+endif()
 
 # Print build summary
 message(STATUS "")

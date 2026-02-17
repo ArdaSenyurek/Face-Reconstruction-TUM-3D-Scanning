@@ -1,6 +1,6 @@
 # Depth-Based Parametric Face Reconstruction from RGB-D Data
 
-3D face reconstruction pipeline for the Biwi Kinect Head Pose dataset. Uses a parametric morphable model (identity + expression), rigid alignment (Procrustes + ICP), and Gauss-Newton optimization with sparse landmark and dense depth terms. Developed for TUM 3D Scanning & Motion Capture.
+3D face reconstruction pipeline for the Biwi Kinect Head Pose dataset. Uses a parametric morphable model (identity + expression), Procrustes rigid alignment, and Gauss-Newton optimization with noise-normalized landmark reprojection, masked + gated + robust (Huber) depth residuals, and per-coefficient clipping. Developed for TUM 3D Scanning & Motion Capture.
 
 **Repository:** [https://github.com/ArdaSenyurek/Face-Reconstruction-TUM-3D-Scanning](https://github.com/ArdaSenyurek/Face-Reconstruction-TUM-3D-Scanning)
 
@@ -9,7 +9,7 @@
 This README lists all **entrypoint files** (main pipeline, C++ tools, scripts, utils), **what each does and produces** (inputs, outputs, purpose), **dependencies and installation**, and **how to launch** the project; it does not document every internal function.
 
 **Summary of accomplishments (key metrics):**
-- **Rigid alignment (Procrustes + ICP):** Landmark alignment error reduced from ~800 mm (pre-alignment) to ~15 mm (post-ICP), ~98% improvement (see `pose_init/*_rigid_report.json`).
+- **Rigid alignment (Procrustes):** Landmark alignment error reduced from ~800 mm (pre-alignment) to ~15 mm (post-Procrustes), ~98% improvement (see `pose_init/*_rigid_report.json`).
 - **Optimization (Gauss-Newton):** Nearest-neighbor mesh–scan RMSE improvement of ~17 mm (rigid vs optimized) in typical runs (see `overlays_3d/*_overlay_metrics.json`).
 - **Runtime:** ~0.4 s per frame for reconstruction; pipeline logs total time in `outputs/logs/`.
 - **Deliverables:** Identity mesh, per-frame expression/pose, depth renderings and overlays, and quantitative metrics (depth error, landmark error, convergence, runtime) as in the proposal (Section 2.5 and 4).
@@ -21,7 +21,7 @@ This README lists all **entrypoint files** (main pipeline, C++ tools, scripts, u
 - **Design goals:** Single entrypoint (`pipeline/main.py`), config-driven run, optional steps (download, convert, model setup, pose init, reconstruct, analysis), and clear data flow aligned with the course project (depth-based parametric reconstruction, identity + expression, evaluation).
 - **Why Python + C++:** Python handles orchestration, I/O, dataset discovery, and CLI; C++ handles numeric-heavy work (Procrustes, morphable model, Gauss-Newton, depth rendering, RMSE). Pipeline steps call C++ binaries via `subprocess` with paths and flags.
 - **Modular steps:** Each step is a class (e.g. `DownloadStep`, `ConversionStep`, `PoseInitStep`, `ReconstructionStep`) with `name`, `description`, and `execute()`. The orchestrator runs them in a fixed order with shared `config` and `state`; steps can be skipped via CLI (e.g. `--skip-convert`) or when prerequisites are missing.
-- **Data flow:** Raw data → `converted/` (RGB, depth, intrinsics) → `landmarks/` (dlib) → **Pose Init (Procrustes + ICP)** → `pose_init/` → `meshes/` (C++ `face_reconstruction`); overlay and analysis steps consume these. Conversion reports drive all downstream steps.
+- **Data flow:** Raw data → `converted/` (RGB, depth, intrinsics) → `landmarks/` (dlib) → **Pose Init (Procrustes)** → `pose_init/` → `meshes/` (C++ `face_reconstruction`); overlay and analysis steps consume these. Conversion reports drive all downstream steps.
 - **Why this structure:** Enables partial runs, restart from a step, and reuse of the same C++ tools from scripts (e.g. evaluation) with consistent paths and options.
 
 ---
@@ -70,7 +70,7 @@ flowchart LR
   scripts --> create_overlays
 ```
 
-**Where C++ lives:** `src/tools/` (face_reconstruction, pose_init, create_overlays, validate_mapping, analysis), `src/alignment/` (Procrustes, ICP, LandmarkMapping), `src/model/`, `src/optimization/` (GaussNewton, EnergyFunction), `src/rendering/` (DepthRenderer), `src/camera/`, `src/landmarks/`, `src/utils/`. These are compiled into the binaries in `build/bin/` called by Python.
+**Where C++ lives:** `src/tools/` (face_reconstruction, pose_init, create_overlays, validate_mapping, analysis), `src/alignment/` (Procrustes, LandmarkMapping), `src/model/`, `src/optimization/` (GaussNewton, EnergyFunction), `src/rendering/` (DepthRenderer), `src/camera/`, `src/landmarks/`, `src/utils/`. These are compiled into the binaries in `build/bin/` called by Python.
 
 ### Pipeline flow (step order; algorithm names)
 
@@ -86,7 +86,7 @@ flowchart TD
   ModelSetup --> LandmarkModel[Landmark Model Download]
   LandmarkModel --> LandmarkDetect[Landmark Detection]
   LandmarkDetect --> MappingSetup[Mapping Setup]
-  MappingSetup --> PoseInit["Rigid alignment (Pose Init): Procrustes + ICP"]
+  MappingSetup --> PoseInit["Rigid alignment (Pose Init): Procrustes"]
   PoseInit --> Overlays{make_overlays?}
   Overlays -->|Yes| Week4Overlay[Overlays C++]
   Overlays -->|No| Reconstruction[Reconstruction C++]
@@ -95,12 +95,14 @@ flowchart TD
   Analysis --> End([End])
 ```
 
-- **Rigid alignment (Pose Init):** Explicit step; C++ `pose_init` runs **Procrustes** (similarity transform from landmark correspondences) then **ICP** refinement; outputs rigid-aligned mesh (PLY) and report JSON. The proposal listed PnP or Procrustes; we use Procrustes + ICP only.
-- **Reconstruction:** Single-frame; C++ `face_reconstruction` with optional **Gauss-Newton** (see optimization cycle below).
+- **Rigid alignment (Pose Init):** Explicit step; C++ `pose_init` runs **Procrustes** (similarity transform from landmark depth backprojection); outputs rigid-aligned mesh (PLY) and report JSON. No ICP in the main pipeline; non-rigid deformation is via morphable model parameters only.
+- **Reconstruction:** Single-frame; C++ `face_reconstruction` with **Gauss-Newton** optimization (default ON). Optimization uses noise-normalized landmark reprojection, masked + gated + robust (Huber) depth residuals, coefficient priors, and per-sigma clipping. All robust features are always enabled (no flags needed).
 
 ### Gauss-Newton optimization (short)
 
-When `--optimize` is used, Reconstruction runs a **Gauss-Newton** loop: compute residuals r (landmark + depth + reg) → compute Jacobian J → solve (J^T J + damping)·δ = −J^T r → line search → update parameters → convergence check. Energy: **E = E_sparse + E_depth + E_reg**.
+By default, Reconstruction runs a **Gauss-Newton** loop: compute residuals r (noise-normalized landmarks + masked/gated/Huber-robust depth + reg) → compute Jacobian J → solve (J^T J + damping)·δ = −J^T r → line search → update parameters → per-coefficient clipping (±3σ) → convergence check. Energy: **E = E_sparse + E_depth + E_reg**. Use `--skip-opt` to disable optimization.
+
+**In-memory:** The optimization loop performs no file or disk I/O; all data (model, depth, landmarks, Jacobian, residuals) stays in RAM. The C++ binary only reads inputs at startup and writes the final mesh (and optional JSON) at the end. To keep the process from swapping, ensure sufficient physical RAM for the model and frame data.
 
 ### Full Gauss-Newton optimization cycle (appendix)
 
@@ -128,7 +130,7 @@ flowchart TD
 
 | Pipeline step   | C++ binary         | Main src components |
 |-----------------|--------------------|----------------------|
-| Pose Init       | `pose_init`        | `src/tools/pose_init.cpp`, `src/alignment/Procrustes.cpp`, `LandmarkMapping.cpp`, `MorphableModel.cpp`, `ICP.cpp` |
+| Pose Init       | `pose_init`        | `src/tools/pose_init.cpp`, `src/alignment/Procrustes.cpp`, `LandmarkMapping.cpp`, `MorphableModel.cpp` |
 | Reconstruction  | `face_reconstruction` | `src/tools/face_reconstruction.cpp`, `src/optimization/`, `src/rendering/`, `src/model/`, `src/alignment/` |
 | Overlays        | `create_overlays`  | `src/tools/create_overlays.cpp`, `DepthRenderer`, `DepthUtils` |
 | Mapping check   | `validate_mapping` | `src/tools/validate_mapping.cpp`, `MorphableModel`, `LandmarkMapping` |
@@ -142,7 +144,7 @@ flowchart TD
 
 | Entrypoint | Purpose | Main options |
 |------------|---------|--------------|
-| **pipeline/main.py** | End-to-end Biwi pipeline: download (optional), convert RGB-D, landmarks, BFM model setup, **Pose Init (Procrustes + ICP)**, reconstruction, optional overlays. | `--data-root`, `--output-root`, `--frames`, `--download`, `--skip-convert`, `--skip-pose-init`, `--skip-reconstruct`, `--no-analysis`, `--optimize`, `--make-overlays`, `--recon-binary`, `--pose-init-binary`, `--model-dir`, `--landmark-mapping` |
+| **pipeline/main.py** | End-to-end Biwi pipeline: download (optional), convert RGB-D, landmarks, BFM model setup, **Pose Init (Procrustes)**, reconstruction (with robust GN optimization by default), optional overlays. | `--data-root`, `--output-root`, `--frames`, `--download`, `--skip-convert`, `--skip-pose-init`, `--skip-reconstruct`, `--no-analysis`, `--make-overlays`, `--recon-binary`, `--pose-init-binary`, `--model-dir`, `--landmark-mapping` |
 
 **Launch (from repo root):**
 ```bash
@@ -165,8 +167,8 @@ Built with CMake; called by the pipeline or scripts.
 
 | Binary | Purpose | Main inputs | Outputs |
 |--------|---------|-------------|---------|
-| **face_reconstruction** | 3D mesh from RGB-D using PCA model + optional **Gauss-Newton** (E_sparse + E_depth + E_reg). | `--rgb`, `--depth`, `--intrinsics`, `--model-dir`, `--landmarks`, `--mapping`, `--output-mesh`; `--optimize` | PLY mesh |
-| **pose_init** | **Rigid alignment:** **Procrustes** + **ICP** from landmarks and depth. | `--rgb`, `--depth`, `--intrinsics`, `--landmarks`, `--model-dir`, `--mapping`, `--output`, `--report` | Aligned mesh (PLY); optional report JSON |
+| **face_reconstruction** | 3D mesh from RGB-D using PCA model + **Gauss-Newton** (default ON; noise-normalized landmarks, masked+gated+robust depth, per-sigma clipping). | `--rgb`, `--depth`, `--intrinsics`, `--model-dir`, `--landmarks`, `--mapping`, `--output-mesh`; `--skip-opt`, `--skip-depth`, `--skip-landmarks` | PLY mesh |
+| **pose_init** | **Rigid alignment:** **Procrustes** from landmarks and depth. | `--rgb`, `--depth`, `--intrinsics`, `--landmarks`, `--model-dir`, `--mapping`, `--output`, `--report` | Aligned mesh (PLY); optional report JSON |
 | **create_overlays** | Mesh-vs-scan overlays (rigid and optional optimized). | `--mesh-rigid`, `--depth`, `--intrinsics`, `--out-dir`; optional `--mesh-opt`, `--rgb`, `--output-metrics` | 3D overlay PLY, 2D PNG, depth comparison, metrics JSON |
 | **validate_mapping** | Check landmark-to-model mapping against PCA model. | `--mapping`, `--model-dir`, optional `--min-count` | Exit code + console |
 | **analysis** | 3D metrics (cloud-to-mesh RMSE, depth stats). | `--pointcloud`, `--mesh`; optional `--depth`, `--output-vis`, `--output-json` | JSON; optional PNG |
@@ -264,8 +266,8 @@ python pipeline/main.py
 # Download Biwi data first, then run on 5 frames
 python pipeline/main.py --download --frames 5
 
-# Run with Gauss-Newton optimization, skip analysis
-python pipeline/main.py --no-analysis --optimize
+# Run without analysis step (optimization is default-on)
+python pipeline/main.py --no-analysis
 ```
 
 Outputs go under `outputs/` (or `--output-root` if set). See **Entrypoints → Main pipeline** for all options (`--skip-convert`, `--make-overlays`, etc.).
@@ -277,6 +279,8 @@ Outputs go under `outputs/` (or `--output-root` if set). See **Entrypoints → M
 **Where to download the model:** The BFM (Basel Face Model, e.g. BFM 2017 or 2019 full head) is not included in the repo due to size. Download it from the **official BFM website** or from **course resources** (TUM 3D Scanning & Motion Capture). Place the downloaded file (`.mat` or `.h5`) in `data/bfm/`.
 
 **How to use it:** The pipeline’s model setup step converts the BFM to the project binary format (mean shape, identity/expression bases, faces). You can also run `pipeline/utils/convert_bfm_to_project.py` manually.
+
+**Mesh looks fragmented or "exploded":** Usually face indices (triangles) do not match the vertex array—e.g. BFM H5 uses 1-based indices. Re-convert with `python pipeline/utils/convert_bfm_to_project.py <bfm.h5> <model-dir>`; the script now converts 1-based faces to 0-based when needed. Ensure `faces.bin` and `mean_shape.bin` come from the same BFM.
 
 ---
 
@@ -311,12 +315,11 @@ All depth values (`depth_min`, `depth_max`, `depth_mean`, `depth_std`) and `rmse
 "mapping_quality": { "pre_alignment_rmse_mm": 800.1 },
 "procrustes_analysis": {
   "post_procrustes_rmse_mm": 14.94,
-  "post_icp_rmse_mm": 15.13,
   "improvement_percent": 98.1
 },
-"alignment_errors": { "rmse_mm": 15.13 }
+"alignment_errors": { "rmse_mm": 14.94 }
 ```
-So rigid alignment reduces landmark error from ~800 mm to ~15 mm after Procrustes + ICP.
+Rigid alignment reduces landmark error from ~800 mm to ~15 mm after Procrustes.
 
 **Rigid vs optimized** (`outputs/overlays_3d/<seq>/<frame>_overlay_metrics.json`) — example:
 ```json
@@ -356,7 +359,7 @@ The course proposal ([LaTeXAuthor_Guidelines_for_Proceedings.pdf](LaTeXAuthor_Gu
 | Metric / evaluation | Where it is | What we achieved |
 |--------------------|-------------|-------------------|
 | **Depth reconstruction error** (RMSE_depth) | `analysis/metrics.json` (per-frame depth stats); `scripts/compute_metrics.py` (depth MAE/RMSE mm); overlay depth comparison | Per-frame depth min/max/mean and cloud–mesh RMSE; optional per-pixel depth error via compute_metrics |
-| **Landmark reprojection error** (Err_lm) | `scripts/compute_metrics.py` (mean/median/RMSE in pixels); pose_init reports (3D alignment RMSE in mm) | 2D reprojection error from mesh landmarks vs detected landmarks; rigid alignment reports ~15 mm 3D landmark error after Procrustes+ICP |
+| **Landmark reprojection error** (Err_lm) | `scripts/compute_metrics.py` (mean/median/RMSE in pixels); pose_init reports (3D alignment RMSE in mm) | 2D reprojection error from mesh landmarks vs detected landmarks; rigid alignment reports ~15 mm 3D landmark error after Procrustes |
 | **Energy convergence** (E over iterations) | From `face_reconstruction` if run with convergence output | `energy_history`, `step_norms`, `iterations`, `converged` for Gauss–Newton runs |
 | **Runtime** | `analysis/metrics.json` → `runtime_seconds` per frame; pipeline log for total time | Per-frame reconstruction time (~0.4 s in examples); total pipeline time in logs |
 | **Side-by-side D_obs vs D_rend** | `analysis/depth_residual_vis/<seq>/*_residual.png` | Visual comparison of observed vs rendered depth |
@@ -388,7 +391,7 @@ Heavy or redundant data (e.g. all pointclouds, all runtime_meshes, every frame�
 ## Checking alignment quality and frame differences
 
 **Rigid alignment (pose init)**  
-- Per-frame reports: `outputs/pose_init/<seq>/<frame>_rigid_report.json` with `pre_alignment_rmse_mm`, `post_procrustes_rmse_mm`, `post_icp_rmse_mm`.  
+- Per-frame reports: `outputs/pose_init/<seq>/<frame>_rigid_report.json` with `pre_alignment_rmse_mm`, `post_procrustes_rmse_mm`.  
 - To aggregate and plot:  
   `python scripts/analyze_sparse_alignment.py --reports-dir outputs/pose_init --output-dir outputs/analysis`
 
@@ -397,7 +400,7 @@ Heavy or redundant data (e.g. all pointclouds, all runtime_meshes, every frame�
 - To report these and the improvement:  
   `python scripts/alignment_and_frame_metrics.py --overlay-metrics-dir outputs/overlays_3d`
 
-**Quality metrics:** For geometric mesh–scan quality, use overlay metrics (`nn_rmse_m` in `*_overlay_metrics.json`) or run the analysis step and see `metrics.json` / `scripts/compute_metrics.py`. For landmark/alignment quality use **pose_init** reports (`post_icp_rmse_mm` in `outputs/pose_init/<seq>/<frame>_rigid_report.json`).
+**Quality metrics:** For geometric mesh–scan quality, use overlay metrics (`nn_rmse_m` in `*_overlay_metrics.json`) or run the analysis step and see `metrics.json` / `scripts/compute_metrics.py`. For landmark/alignment quality use **pose_init** reports (`post_procrustes_rmse_mm` in `outputs/pose_init/<seq>/<frame>_rigid_report.json`).
 
 ---
 

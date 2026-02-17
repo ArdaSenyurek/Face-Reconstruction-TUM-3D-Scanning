@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Optional, Dict, List
 from collections import defaultdict
 
-from main import PipelineStep, StepResult, StepStatus
+from main import PipelineStep, StepResult, StepStatus, select_frames
 
 
 class PoseInitStep(PipelineStep):
@@ -26,13 +26,16 @@ class PoseInitStep(PipelineStep):
         binary = Path(self.config.get("pose_init_binary", "build/bin/pose_init")).resolve()
         if not binary.exists():
             return StepResult(StepStatus.FAILED, f"Pose init binary not found: {binary}")
+        self.logger.info(f"Using pose_init binary: {binary}")
         
         model_dir = Path(self.config.get("model_dir", "data/model_biwi"))
         mapping_path = Path(self.config.get("landmark_mapping", "data/bfm_landmark_68.txt"))
         conversion_reports = self.config.get("conversion_reports", [])
         landmarks_root = Path(self.config.get("landmarks_root", "outputs/landmarks"))
         pose_init_root = Path(self.config.get("pose_init_root", "outputs/pose_init"))
-        run_frames = self.config.get("run_frames", 5)
+        run_frames = self.config.get("run_frames", 4)
+        frame_step = self.config.get("frame_step", 20)
+        frame_indices = self.config.get("frame_indices")
         timeout = self.config.get("timeout", 60)
         
         if not mapping_path.exists():
@@ -54,7 +57,7 @@ class PoseInitStep(PipelineStep):
                 self.logger.warning(f"Missing intrinsics for {seq_id}, skipping")
                 continue
             
-            frames = sorted(rgb_dir.glob("frame_*.png"))[:run_frames]
+            frames = select_frames(rgb_dir, frame_step, run_frames, frame_indices)
             
             for frame in frames:
                 depth_frame = depth_dir / frame.name
@@ -71,7 +74,7 @@ class PoseInitStep(PipelineStep):
                     frame, depth_frame, landmark_file, output_mesh, report_json, timeout
                 )
                 
-                # Collect visualization file paths
+                # Collect visualization file paths (overlay is overwritten each run)
                 viz_files = {}
                 if success and report_json.exists():
                     # Check for visualization files
@@ -114,7 +117,7 @@ class PoseInitStep(PipelineStep):
             
             if "procrustes_analysis" in summary_stats:
                 pa = summary_stats["procrustes_analysis"]
-                self.logger.info(f"Average post-ICP RMSE: {pa.get('avg_post_icp_rmse', 0):.2f} mm")
+                self.logger.info(f"Average post-Procrustes RMSE: {pa.get('avg_post_procrustes_rmse', 0):.2f} mm")
                 self.logger.info(f"Average improvement: {pa.get('avg_improvement', 0):.1f}%")
             self.logger.info("=" * 40)
         
@@ -123,7 +126,7 @@ class PoseInitStep(PipelineStep):
     
     def _run_pose_init(self, binary: Path, model_dir: Path, mapping_path: Path,
                       intrinsics: Path, rgb: Path, depth: Path, landmarks: Path,
-                      output_mesh: Path, report_json: Path, timeout: int) -> bool:
+                      output_mesh: Path, report_json: Path, timeout: Optional[int]) -> bool:
         """Run the pose initialization binary."""
         cmd = [
             str(binary),
@@ -139,9 +142,11 @@ class PoseInitStep(PipelineStep):
         
         output_mesh.parent.mkdir(parents=True, exist_ok=True)
         
+        # No time limit when timeout is 0 or None (same as reconstruction step)
+        run_timeout = None if (timeout is None or timeout <= 0) else timeout
         try:
             result = subprocess.run(
-                cmd, check=True, capture_output=True, text=True, timeout=timeout
+                cmd, check=True, capture_output=True, text=True, timeout=run_timeout
             )
             return output_mesh.exists()
         except subprocess.CalledProcessError as exc:
@@ -179,7 +184,7 @@ class PoseInitStep(PipelineStep):
                 # Collect Procrustes analysis metrics
                 if "procrustes_analysis" in data:
                     pa = data["procrustes_analysis"]
-                    stats["procrustes_analysis"]["post_icp_rmse"].append(pa.get("post_icp_rmse_mm", 0))
+                    stats["procrustes_analysis"]["post_procrustes_rmse"].append(pa.get("post_procrustes_rmse_mm", 0))
                     stats["procrustes_analysis"]["improvement"].append(pa.get("improvement_percent", 0))
             
             except Exception as e:

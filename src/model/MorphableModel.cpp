@@ -7,12 +7,13 @@
  */
 
 #include "model/MorphableModel.h"
-#include <fstream>
-#include <iostream>
-#include <sstream>
-#include <iomanip>
-#include <vector>
 #include <cstdint>
+#include <fstream>
+#include <iomanip>
+#include <iostream>
+#include <limits>
+#include <sstream>
+#include <vector>
 
 namespace face_reconstruction {
 
@@ -264,6 +265,24 @@ bool MorphableModel::loadFromFiles(const std::string& base_path) {
                     }
                 }
                 std::cout << "Loaded " << faces.rows() << " faces from binary file" << std::endl;
+                // Validate: all indices must be in [0, num_vertices-1] (else mesh looks fragmented)
+                int max_idx = 0;
+                int min_idx = std::numeric_limits<int>::max();
+                for (int i = 0; i < faces.rows(); ++i) {
+                    for (int j = 0; j < 3; ++j) {
+                        int idx = faces(i, j);
+                        if (idx > max_idx) max_idx = idx;
+                        if (idx < min_idx) min_idx = idx;
+                    }
+                }
+                if (num_vertices > 0 && (min_idx < 0 || max_idx >= num_vertices)) {
+                    std::cerr << "Error: Face indices out of range [0, " << (num_vertices - 1)
+                              << "]: min=" << min_idx << ", max=" << max_idx
+                              << ". Check that faces are 0-based and match this model (re-convert BFM with correct indexing)." << std::endl;
+                    faces.resize(0, 0);
+                } else if (min_idx == 1 && max_idx == num_vertices) {
+                    std::cerr << "Warning: Face indices look 1-based (min=1). Re-run convert_bfm_to_project.py to export 0-based faces." << std::endl;
+                }
             } else {
                 faces.resize(0, 0);
             }

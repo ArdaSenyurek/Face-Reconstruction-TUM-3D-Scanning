@@ -31,24 +31,21 @@ struct OptimizationParams {
     double lambda_delta = 1.0;   // Weight for expression regularization
     double lambda_landmark = 1.0; // Weight for landmark term
     double lambda_depth = 0.1;   // Weight for depth term (lower than landmarks for stability)
-    double lambda_translation_prior = 0.0;  // Weight for translation prior (0 = disabled; used in tracking to reduce drift)
-    double max_translation_delta_m = 0.0;   // Max translation change per frame in meters (0 = no clip; used with prior)
     
-    // Optimizer settings
-    int max_iterations = 50;
-    double convergence_threshold = 1e-6;
-    double step_size = 1.0;      // Gauss-Newton step size (can reduce for stability)
+    // Optimizer settings (fewer iterations, stricter early stopping)
+    int max_iterations = 5;
+    double convergence_threshold = 1e-4;
+    double step_size = 1.0;      // Gauss-Newton step scale (fixed)
     
-    // Week 6: Coefficient clamps (0 = no clamp). Log when exceeded.
-    double max_alpha_norm = 0.0;   // Max L2 norm for identity (0 = disabled)
-    double max_delta_norm = 3.0;   // Max L2 norm for expression (0 = disabled; 3.0 = safe default)
+    // Per-coefficient sigma for clipping (set from MorphableModel at init)
+    Eigen::VectorXd identity_stddev;
+    Eigen::VectorXd expression_stddev;
+    /** Clip alpha/delta to ± coeff_clip_sigma * sigma (default 2.0; lower = smoother, less spikes) */
+    double coeff_clip_sigma = 2.0;
     
-    // Which parameters to optimize (useful for multi-frame tracking)
-    // Default: pose-only for speed (identity/expression disabled)
-    bool optimize_identity = true;    // Enabled for performance
-    bool optimize_expression = true;  // Enabled for performance  
-    bool optimize_rotation = true;
-    bool optimize_translation = true;
+    // Which parameters to optimize (pose R, t, scale are always fixed from Procrustes)
+    bool optimize_identity = true;
+    bool optimize_expression = true;
     
     /**
      * Default constructor - initializes with identity pose
@@ -73,8 +70,6 @@ struct OptimizationParams {
         int n = 0;
         if (optimize_identity) n += alpha.size();
         if (optimize_expression) n += delta.size();
-        if (optimize_rotation) n += 3;  // Rotation as axis-angle (3 params)
-        if (optimize_translation) n += 3;
         return n;
     }
     
@@ -92,16 +87,6 @@ struct OptimizationParams {
      * Apply a delta update to parameters
      */
     void applyUpdate(const Eigen::VectorXd& delta_params);
-    
-    /**
-     * Convert rotation matrix to axis-angle representation
-     */
-    static Eigen::Vector3d rotationToAxisAngle(const Eigen::Matrix3d& R);
-    
-    /**
-     * Convert axis-angle to rotation matrix
-     */
-    static Eigen::Matrix3d axisAngleToRotation(const Eigen::Vector3d& aa);
 };
 
 /**
@@ -122,7 +107,6 @@ struct OptimizationResult {
     double regularization_energy;
     int depth_valid_count = 0;     // Number of valid depth pixels (for per-pixel RMSE)
     double final_step_norm = 0.0;  // Week 6: last applied step norm
-    double damping_used = 1e-4;    // Week 6: damping value used (for convergence.json)
 };
 
 } // namespace face_reconstruction

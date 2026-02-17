@@ -222,6 +222,31 @@ def setup_logging(log_dir: Path, level: str = "INFO") -> tuple[PipelineLogger, P
     return logger, log_file
 
 
+def select_frames(
+    rgb_dir: Path,
+    frame_step: int,
+    run_frames: int,
+    frame_indices: Optional[List[int]],
+) -> List[Path]:
+    """
+    Select frame paths from an rgb directory for pipeline steps.
+    If frame_indices is set, return frames at those indices (0-based into sorted list).
+    Otherwise return every frame_step-th frame, up to run_frames.
+    """
+    if not rgb_dir.is_dir():
+        return []
+    files = sorted(rgb_dir.glob("*.png"))
+    if not files:
+        files = sorted(rgb_dir.glob("*.jpg"))
+    if not files:
+        return []
+    if frame_indices is not None:
+        indices = [i for i in sorted(frame_indices) if 0 <= i < len(files)]
+        return [files[i] for i in indices]
+    indices = list(range(0, len(files), max(1, frame_step)))[:max(1, run_frames)]
+    return [files[i] for i in indices]
+
+
 # ============================================================================
 # Base Pipeline Step Classes
 # ============================================================================
@@ -660,6 +685,8 @@ class PipelineOrchestrator:
                 "max_frames": self.config.get("max_frames", 25),
                 "sequence": self.config.get("sequence"),
                 "intrinsics": self.config.get("intrinsics"),
+                "frame_step": self.config.get("frame_step", 1),
+                "frame_indices": self.config.get("frame_indices"),
             })
             result = step.run()
             self._record_result("conversion", result)
@@ -713,6 +740,9 @@ class PipelineOrchestrator:
                 "landmarks_root": self.config["output_root"] / "landmarks",
                 "overlays_root": self.config["output_root"] / "overlays",
                 "run_frames": self.config.get("run_frames", 5),
+                "frame_step": self.config.get("frame_step", 20),
+                "frame_indices": self.config.get("frame_indices"),
+                "skip": self.config.get("skip_landmarks", False),
             })
             result = step.run()
             self._record_result("landmarks", result)
@@ -745,6 +775,8 @@ class PipelineOrchestrator:
                 "landmarks_root": self.config["output_root"] / "landmarks",
                 "pose_init_root": self.config["output_root"] / "pose_init",
                 "run_frames": self.config.get("run_frames", 5),
+                "frame_step": self.config.get("frame_step", 20),
+                "frame_indices": self.config.get("frame_indices"),
                 "timeout": self.config.get("timeout", 60),
             })
             result = step.run()
@@ -782,6 +814,8 @@ class PipelineOrchestrator:
                 "analysis_root": self.config.get("analysis_root", self.config["output_root"] / "analysis"),
                 "landmarks_root": self.config["output_root"] / "landmarks",
                 "run_frames": self.config.get("run_frames", 5),
+                "frame_step": self.config.get("frame_step", 20),
+                "frame_indices": self.config.get("frame_indices"),
                 "timeout": self.config.get("timeout", 60),
                 "save_pointclouds": self.config.get("save_pointclouds", False),
                 "optimize": self.config.get("optimize", False),
@@ -791,6 +825,7 @@ class PipelineOrchestrator:
                 "lambda_landmark": self.config.get("lambda_landmark", 1.0),
                 "lambda_depth": self.config.get("lambda_depth", 0.1),
                 "lambda_reg": self.config.get("lambda_reg", 1.0),
+                "convergence_threshold": self.config.get("convergence_threshold", 1e-5),
             })
             result = step.run()
             self._record_result("reconstruction", result)
@@ -906,6 +941,9 @@ Examples:
   # Full pipeline with all steps (analysis enabled by default)
   python pipeline/main.py --frames 5
 
+  # 3 frames per sequence (indices 2, 6, 12), skip landmarks, verbose optimization
+  python pipeline/main.py --frame-indices 2 6 12 --skip-landmarks --verbose-optimize
+
   # Download and run full pipeline
   python pipeline/main.py --download --frames 5
 
@@ -925,10 +963,14 @@ Examples:
                       help="(Ignored) All sequences are processed")
     parser.add_argument("--frames", type=int, default=5,
                       help="Number of frames to process per sequence (default: 5, also limits conversion)")
+    parser.add_argument("--frame-indices", type=int, nargs="*", default=None,
+                      help="Use specific frame indices per sequence (0-based, e.g. 2 6 12 for frames 2, 6, 12)")
     parser.add_argument("--max-frames", type=int, default=None,
                       help="Max frames to convert per sequence (0 = all, default: uses --frames value)")
     
     # Step toggles
+    parser.add_argument("--skip-landmarks", action="store_true",
+                      help="Skip landmark detection step")
     parser.add_argument("--download", action="store_true",
                       help="Download dataset using kagglehub (default: skip, use existing data)")
     parser.add_argument("--skip-convert", action="store_true",
@@ -964,9 +1006,9 @@ Examples:
     parser.add_argument("--no-analysis", action="store_true",
                       help="Disable analysis (point clouds, depth visualization, metrics, and runtime)")
     
-    # Week 4: Optimization settings
-    parser.add_argument("--optimize", action="store_true",
-                      help="Enable Gauss-Newton optimization (default: off for mean shape)")
+    # Week 4: Optimization settings (optimization on by default)
+    parser.add_argument("--no-optimize", dest="optimize", action="store_false", default=True,
+                      help="Disable Gauss-Newton optimization (default: optimization enabled)")
     parser.add_argument("--max-iterations", type=int, default=10,
                       help="Maximum optimization iterations (default: 10)")
     parser.add_argument("--timeout", type=int, default=120,
@@ -977,6 +1019,8 @@ Examples:
                       help="Depth term weight (default: 0.1)")
     parser.add_argument("--lambda-reg", type=float, default=1.0,
                       help="Regularization weight (default: 1.0)")
+    parser.add_argument("--convergence-threshold", type=float, default=1e-5,
+                      help="Stop optimization when step norm or relative energy change below this (default: 1e-5)")
     parser.add_argument("--verbose-optimize", action="store_true",
                       help="Print detailed optimization output")
     
@@ -1012,18 +1056,23 @@ def main() -> int:
     # Build configuration with sensible defaults
     # If --max-frames not explicitly set, use --frames value
     max_frames = args.max_frames if args.max_frames is not None else args.frames
+    frame_indices = args.frame_indices  # e.g. [2, 6, 12] for frames 2, 6, 12
+    if frame_indices is not None:
+        max_frames = max(max_frames, max(frame_indices) + 1) if frame_indices else max_frames
     
     config = {
         "data_root": args.data_root,
         "output_root": args.output_root,
         "analysis_root": args.output_root / "analysis",  # Always default
         "max_frames": max_frames,
+        "frame_indices": frame_indices,
         "sequence": None,  # Ignored; all sequences are processed
         "kaggle_dataset": DEFAULT_KAGGLE_DATASET,
         "intrinsics": None,  # Use calibration file or defaults
         "skip_download": not args.download,  # Skip by default, enable with --download
         "skip_convert": args.skip_convert,
         "skip_model_setup": args.skip_model_setup,
+        "skip_landmarks": args.skip_landmarks,
         "skip_pose_init": args.skip_pose_init,
         "skip_reconstruct": args.skip_reconstruct,
         "require_model": args.require_model,
@@ -1050,6 +1099,7 @@ def main() -> int:
         "lambda_landmark": args.lambda_landmark,
         "lambda_depth": args.lambda_depth,
         "lambda_reg": args.lambda_reg,
+        "convergence_threshold": args.convergence_threshold,
         "verbose_optimize": args.verbose_optimize,
         # Overlay generation
         "make_overlays": args.make_overlays,

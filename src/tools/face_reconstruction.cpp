@@ -280,43 +280,46 @@ bool saveTrackingStateJSON(const std::string& filepath,
 
 void printUsage(const char* program_name) {
     std::cout << "Usage: " << program_name << " [options]\n"
-              << "Options:\n"
+              << "\nRequired inputs:\n"
               << "  --rgb <path>              Path to RGB image file\n"
               << "  --depth <path>            Path to depth image file\n"
-              << "  --depth-scale <value>     Depth scale factor (default: 1000.0)\n"
               << "  --intrinsics <path>       Path to camera intrinsics file (fx fy cx cy)\n"
               << "  --model-dir <path>        Directory containing PCA model files\n"
               << "  --landmarks <path>        Path to landmarks file (TXT or JSON)\n"
               << "  --mapping <path>          Path to landmark mapping file\n"
               << "  --output-mesh <path>      Output mesh file path (PLY or OBJ)\n"
-              << "  --output-pointcloud <path> Output point cloud file path (PLY)\n"
-              << "  --optimize                Enable Gauss-Newton optimization\n"
-              << "  --no-optimize             Output mean shape only (default)\n"
-              << "  --max-iter <n>            Max optimization iterations (default: 50)\n"
-              << "  --lambda-landmark <w>     Landmark weight (default: 1.0)\n"
-              << "  --lambda-depth <w>        Depth weight (default: 0.1)\n"
-              << "  --lambda-reg <w>          Regularization weight (default: 1.0)\n"
-              << "  --lambda-alpha <w>        Identity regularization (Week 6, overrides lambda-reg)\n"
-              << "  --lambda-delta <w>        Expression regularization (Week 6, overrides lambda-reg)\n"
-              << "  --lambda-translation-prior <w>  Translation prior weight in tracking (default: 0.5, 0=off)\n"
-              << "  --max-translation-delta-m <m>   Max translation change per frame in meters (default: 0.1, 0=no clip)\n"
-              << "  --verbose                 Print detailed optimization output\n"
-              << "  --help                    Show this help message\n"
-              << "\n"
-              << "Week 5 Tracking Options:\n"
-              << "  --init-pose-json <path>   Load initial pose/expression from JSON\n"
-              << "  --output-state-json <path> Save final pose/expression to JSON\n"
-              << "\n"
-              << "Week 6 Evaluation Protocol (3-stage):\n"
-              << "  --stage <id|expr|full>    id=identity only, expr=expression only, full=tracking (default: full)\n"
-              << "  --init-identity-json <path> Load identity (alpha) and pose from Stage 1 (for Stage 2)\n"
-              << "  --output-convergence-json <path> Save energy_history, step_norms, iterations\n"
-              << "\n"
-              << "Example:\n"
+              << "\nOptional outputs:\n"
+              << "  --output-pointcloud <path>       Output point cloud file path (PLY)\n"
+              << "  --output-state-json <path>       Save final pose/expression to JSON\n"
+              << "  --output-convergence-json <path> Save energy/convergence diagnostics\n"
+              << "\nSkip flags (default: full robust pipeline with optimization):\n"
+              << "  --skip-opt               Skip GN optimization, output Procrustes-init mesh\n"
+              << "  --skip-depth             Run optimization with landmarks+priors only (no depth term)\n"
+              << "  --skip-landmarks         Run optimization with depth+priors only (no landmark term)\n"
+              << "\nTracking / stage control:\n"
+              << "  --init-pose-json <path>       Load initial pose/expression from JSON\n"
+              << "  --init-identity-json <path>   Load identity (alpha) from Stage 1\n"
+              << "  --stage <id|expr|coeffs> id=identity only; expr=expression only; coeffs=alpha+delta (default; pose fixed from Procrustes)\n"
+              << "  --depth-scale <value>         Depth scale factor (default: 1000.0)\n"
+              << "\nDebug:\n"
+              << "  --verbose                Print detailed optimization output\n"
+              << "  --depth-step <N>         Sample every Nth pixel for depth term (default: 8, higher=faster)\n"
+              << "  --max-iter <N>           Max Gauss-Newton iterations (default: 5)\n"
+              << "  --lambda-landmark <w>    Landmark term weight (default: 1.0)\n"
+              << "  --lambda-depth <w>       Depth term weight (default: 0.1)\n"
+              << "  --lambda-reg <w>         Regularization weight for alpha+delta if not set separately (default: 2.0)\n"
+              << "  --lambda-alpha <w>       Identity (alpha) regularization only (default: use lambda-reg)\n"
+              << "  --lambda-delta <w>       Expression (delta) regularization only (default: use lambda-reg)\n"
+              << "  --coeff-clip-sigma <s>   Clip alpha/delta to +/- s*sigma (default: 2.0; lower=smoother, less spikes)\n"
+              << "  --convergence-threshold <t> Stop when step norm or rel. energy change < t (default: 1e-4)\n"
+              << "  --help                   Show this help message\n"
+              << "\nDefault behavior: robust masked pipeline with GN optimization.\n"
+              << "Per-coefficient clipping (default 2-sigma) and stronger reg (lambda_reg=2) reduce spikes.\n"
+              << "\nExample:\n"
               << "  " << program_name << " --rgb data/rgb.png --depth data/depth.png \\\n"
               << "     --intrinsics data/intrinsics.txt --model-dir data/model_bfm \\\n"
               << "     --landmarks data/landmarks.txt --mapping data/landmark_mapping.txt \\\n"
-              << "     --output-mesh output/face.ply --optimize\n";
+              << "     --output-mesh output/face.ply\n";
 }
 
 int main(int argc, char* argv[]) {
@@ -324,18 +327,19 @@ int main(int argc, char* argv[]) {
     std::string landmarks_path, mapping_path, output_mesh, output_pointcloud;
     std::string init_pose_json, output_state_json;  // Week 5: Tracking support
     std::string init_identity_json, output_convergence_json;  // Week 6: Stage 2 + convergence
-    std::string stage_mode = "full";  // Week 6: "id" | "expr" | "full" (default full = backward compat)
+    std::string stage_mode = "coeffs";
     double depth_scale = 1000.0;
-    bool optimize = false;
+    bool optimize = true;
+    bool skip_depth = false;
+    bool skip_landmarks = false;
     bool verbose = false;
-    int max_iterations = 50;
-    double lambda_landmark = 1.0;
-    double lambda_depth = 0.1;
-    double lambda_reg = 1.0;
-    double lambda_alpha_sep = 0.0;  // Week 6: if > 0 use for identity; else lambda_reg
-    double lambda_delta_sep = 0.0;  // Week 6: if > 0 use for expression; else lambda_reg
-    double lambda_translation_prior = 0.5;  // Translation prior in tracking (0 = disabled)
-    double max_translation_delta_m = 0.1;   // Max translation change per frame in meters (0 = no clip; reduces drift)
+    int depth_sample_step = 8;  // default: faster (was 4)
+    int max_iterations = 5;
+    double lambda_landmark = 1.0, lambda_depth = 0.1, lambda_reg = 2.0;
+    double lambda_alpha = -1.0;  // if < 0, use lambda_reg
+    double lambda_delta = -1.0;   // if < 0, use lambda_reg
+    double coeff_clip_sigma = 2.0;  // clip alpha/delta to ± this * sigma (lower = smoother)
+    double convergence_threshold = 1e-4;
     
     // Parse command line arguments
     for (int i = 1; i < argc; ++i) {
@@ -362,23 +366,32 @@ int main(int argc, char* argv[]) {
         } else if (arg == "--output-pointcloud" && i + 1 < argc) {
             output_pointcloud = argv[++i];
         } else if (arg == "--init-pose-json" && i + 1 < argc) {
-            init_pose_json = argv[++i];  // Week 5
+            init_pose_json = argv[++i];
         } else if (arg == "--output-state-json" && i + 1 < argc) {
-            output_state_json = argv[++i];  // Week 5
+            output_state_json = argv[++i];
         } else if (arg == "--stage" && i + 1 < argc) {
-            stage_mode = argv[++i];  // Week 6: id | expr | full
+            stage_mode = argv[++i];
         } else if (arg == "--init-identity-json" && i + 1 < argc) {
-            init_identity_json = argv[++i];  // Week 6: Stage 2
+            init_identity_json = argv[++i];
         } else if (arg == "--output-convergence-json" && i + 1 < argc) {
-            output_convergence_json = argv[++i];  // Week 6
-        } else if (arg == "--optimize") {
-            optimize = true;
-        } else if (arg == "--no-optimize") {
+            output_convergence_json = argv[++i];
+        } else if (arg == "--skip-opt") {
             optimize = false;
+        } else if (arg == "--skip-depth") {
+            skip_depth = true;
+        } else if (arg == "--skip-landmarks") {
+            skip_landmarks = true;
+        } else if (arg == "--optimize") {
+            optimize = true;  // backward compat
+        } else if (arg == "--no-optimize") {
+            optimize = false;  // backward compat
         } else if (arg == "--verbose") {
             verbose = true;
+        } else if (arg == "--depth-step" && i + 1 < argc) {
+            int step = std::stoi(argv[++i]);
+            depth_sample_step = (step > 0) ? step : 1;
         } else if (arg == "--max-iter" && i + 1 < argc) {
-            max_iterations = std::stoi(argv[++i]);
+            max_iterations = std::max(1, std::stoi(argv[++i]));
         } else if (arg == "--lambda-landmark" && i + 1 < argc) {
             lambda_landmark = std::stod(argv[++i]);
         } else if (arg == "--lambda-depth" && i + 1 < argc) {
@@ -386,16 +399,19 @@ int main(int argc, char* argv[]) {
         } else if (arg == "--lambda-reg" && i + 1 < argc) {
             lambda_reg = std::stod(argv[++i]);
         } else if (arg == "--lambda-alpha" && i + 1 < argc) {
-            lambda_alpha_sep = std::stod(argv[++i]);
+            lambda_alpha = std::stod(argv[++i]);
         } else if (arg == "--lambda-delta" && i + 1 < argc) {
-            lambda_delta_sep = std::stod(argv[++i]);
-        } else if (arg == "--lambda-translation-prior" && i + 1 < argc) {
-            lambda_translation_prior = std::stod(argv[++i]);
-        } else if (arg == "--max-translation-delta-m" && i + 1 < argc) {
-            max_translation_delta_m = std::stod(argv[++i]);
+            lambda_delta = std::stod(argv[++i]);
+        } else if (arg == "--coeff-clip-sigma" && i + 1 < argc) {
+            coeff_clip_sigma = std::stod(argv[++i]);
+            if (coeff_clip_sigma < 0.5) coeff_clip_sigma = 0.5;
+            if (coeff_clip_sigma > 5.0) coeff_clip_sigma = 5.0;
+        } else if (arg == "--convergence-threshold" && i + 1 < argc) {
+            convergence_threshold = std::stod(argv[++i]);
+            if (convergence_threshold < 1e-8) convergence_threshold = 1e-8;
         }
     }
-    std::cout << "Mode: " << (optimize ? "Optimized" : "Mean Shape Only") << std::endl;
+    std::cout << "Mode: " << (optimize ? "Optimized (robust pipeline)" : "Mean Shape Only (--skip-opt)") << std::endl;
     std::cout << std::endl;
     
     // Load RGB-D frame
@@ -508,35 +524,43 @@ int main(int argc, char* argv[]) {
             return 1;
         }
         std::cout << "    Loaded " << mapping.size() << " mappings" << std::endl;
+        
+        // Mapping sanity check: warn if mouth/eye landmarks are missing
+        int mouth_count = 0, eye_count = 0;
+        for (int idx = 36; idx <= 47; ++idx) if (mapping.hasMapping(idx)) eye_count++;
+        for (int idx = 48; idx <= 67; ++idx) if (mapping.hasMapping(idx)) mouth_count++;
+        if (mouth_count < 4)
+            std::cerr << "[WARNING] Only " << mouth_count
+                      << " mouth landmarks mapped; expression fitting may be poor" << std::endl;
+        if (eye_count < 4)
+            std::cerr << "[WARNING] Only " << eye_count
+                      << " eye landmarks mapped" << std::endl;
     }
     
     // Initialize optimization parameters
     OptimizationParams params(model.num_identity_components, model.num_expression_components);
+    params.lambda_landmark = skip_landmarks ? 0.0 : lambda_landmark;
+    params.lambda_depth = skip_depth ? 0.0 : lambda_depth;
+    params.lambda_alpha = (lambda_alpha >= 0) ? lambda_alpha : lambda_reg;
+    params.lambda_delta = (lambda_delta >= 0) ? lambda_delta : lambda_reg;
+    params.coeff_clip_sigma = coeff_clip_sigma;
     params.max_iterations = max_iterations;
-    params.lambda_landmark = lambda_landmark;
-    params.lambda_depth = lambda_depth;
-    params.lambda_alpha = (lambda_alpha_sep > 0) ? lambda_alpha_sep : lambda_reg;
-    params.lambda_delta = (lambda_delta_sep > 0) ? lambda_delta_sep : lambda_reg;
+    params.convergence_threshold = convergence_threshold;
+    params.identity_stddev = model.identity_stddev;
+    params.expression_stddev = model.expression_stddev;
     
-    // Week 6: Set which parameters to optimize from --stage (id | expr | full)
-    // id = identity only (delta=0, pose fixed); expr = expression only (alpha fixed); full = tracking (expression + pose warm-start)
+    // Set which parameters to optimize from --stage (id | expr | coeffs). Pose is always fixed from Procrustes.
     if (optimize && stage_mode == "id") {
         params.optimize_identity = true;
         params.optimize_expression = false;
-        params.optimize_rotation = false;
-        params.optimize_translation = false;
         params.delta.setZero();
     } else if (optimize && stage_mode == "expr") {
         params.optimize_identity = false;
         params.optimize_expression = true;
-        params.optimize_rotation = false;
-        params.optimize_translation = false;
     } else {
-        // Week 4/5: full or legacy — optimize expression and pose so tracking can change over time
-        params.optimize_expression = optimize;
-        params.optimize_identity = false;
-        params.optimize_rotation = optimize;
-        params.optimize_translation = optimize;
+        // coeffs (default): optimize identity and expression only
+        params.optimize_identity = true;
+        params.optimize_expression = true;
     }
     
     // Scale factor from Procrustes (BFM mm -> camera meters)
@@ -549,6 +573,9 @@ int main(int argc, char* argv[]) {
         // Week 4/5: Gauss-Newton Optimization with Tracking Support
         // =========================================
         std::cout << "\n[8] Running Gauss-Newton optimization..." << std::endl;
+        std::cout << "    Active parameters: identity(alpha)=" << (params.optimize_identity ? "yes" : "no")
+                  << ", expression(delta)=" << (params.optimize_expression ? "yes" : "no")
+                  << ", pose fixed from Procrustes (" << params.numParameters() << " dof)" << std::endl;
         
         bool loaded_from_json = false;
         
@@ -575,8 +602,6 @@ int main(int argc, char* argv[]) {
                 params.scale = scale_pose;
                 pose_scale = scale_pose;
                 loaded_from_json = true;
-                params.lambda_translation_prior = lambda_translation_prior;  // Reduce drift in tracking
-                params.max_translation_delta_m = max_translation_delta_m;    // Hard-bound translation change per frame
                 std::cout << "    Loaded pose: scale=" << pose_scale << ", t=[" << params.t.transpose() << "]" << std::endl;
             }
         }
@@ -634,9 +659,15 @@ int main(int argc, char* argv[]) {
             }
         }
         
+        // Build face ROI mask from landmarks (always on)
+        cv::Mat roi_mask = EnergyFunction::buildLandmarkRoiMask(
+            landmarks, image_width, image_height);
+        
         // Run optimization
         GaussNewtonOptimizer optimizer;
         optimizer.initialize(model, intrinsics, image_width, image_height);
+        optimizer.setDepthMask(roi_mask);
+        optimizer.setDepthSampleStep(depth_sample_step);
         optimizer.setVerbose(verbose);
         
         OptimizationResult result = optimizer.optimize(
@@ -651,7 +682,20 @@ int main(int argc, char* argv[]) {
         std::cout << "      Landmark energy: " << result.landmark_energy << std::endl;
         std::cout << "      Depth energy: " << result.depth_energy << std::endl;
         std::cout << "      Regularization: " << result.regularization_energy << std::endl;
-        
+        // Alpha (identity) / delta (expression) norms in sigma units (confirm they are optimized)
+        if (result.final_params.alpha.size() > 0) {
+            double an = 0;
+            for (int i = 0; i < result.final_params.alpha.size() && i < model.identity_stddev.size(); ++i)
+                if (model.identity_stddev(i) > 1e-10) { double v = result.final_params.alpha(i) / model.identity_stddev(i); an += v * v; }
+            std::cout << "      Identity (alpha) ||.||_sigma: " << std::sqrt(an) << std::endl;
+        }
+        if (result.final_params.delta.size() > 0) {
+            double dn = 0;
+            for (int i = 0; i < result.final_params.delta.size() && i < model.expression_stddev.size(); ++i)
+                if (model.expression_stddev(i) > 1e-10) { double v = result.final_params.delta(i) / model.expression_stddev(i); dn += v * v; }
+            std::cout << "      Expression (delta) ||.||_sigma: " << std::sqrt(dn) << std::endl;
+        }
+
         // Reconstruct with optimized coefficients
         final_vertices = model.reconstructFace(
             result.final_params.alpha, result.final_params.delta);
@@ -682,18 +726,47 @@ int main(int argc, char* argv[]) {
                 std::cout << "    State saved successfully" << std::endl;
             }
         }
-        // Week 6: Save convergence data for evaluation (energy_history, step_norms, iterations, damping)
+        // Save convergence data + diagnostics
         if (!output_convergence_json.empty()) {
             std::ofstream conv_file(output_convergence_json);
             if (conv_file.is_open()) {
+                // Compute expression/identity diagnostics
+                double delta_norm_sigma = 0.0;
+                double alpha_norm_sigma = 0.0;
+                const auto& fp = result.final_params;
+                if (model.expression_stddev.size() > 0 && fp.delta.size() > 0) {
+                    for (int k = 0; k < fp.delta.size() && k < model.expression_stddev.size(); ++k) {
+                        double s = model.expression_stddev(k);
+                        if (s > 1e-10) { double v = fp.delta(k) / s; delta_norm_sigma += v * v; }
+                    }
+                    delta_norm_sigma = std::sqrt(delta_norm_sigma);
+                }
+                if (model.identity_stddev.size() > 0 && fp.alpha.size() > 0) {
+                    for (int k = 0; k < fp.alpha.size() && k < model.identity_stddev.size(); ++k) {
+                        double s = model.identity_stddev(k);
+                        if (s > 1e-10) { double v = fp.alpha(k) / s; alpha_norm_sigma += v * v; }
+                    }
+                    alpha_norm_sigma = std::sqrt(alpha_norm_sigma);
+                }
+
                 conv_file << std::fixed << std::setprecision(8);
                 conv_file << "{\n  \"iterations\": " << result.iterations
                           << ",\n  \"converged\": " << (result.converged ? "true" : "false")
                           << ",\n  \"initial_energy\": " << result.initial_energy
                           << ",\n  \"final_energy\": " << result.final_energy
                           << ",\n  \"final_step_norm\": " << result.final_step_norm
-                          << ",\n  \"damping_used\": " << result.damping_used
-                          << ",\n  \"energy_history\": [";
+                          << ",\n  \"depth_valid_count\": " << result.depth_valid_count
+                          << ",\n  \"delta_norm_sigma\": " << delta_norm_sigma
+                          << ",\n  \"alpha_norm_sigma\": " << alpha_norm_sigma
+                          << ",\n  \"stage\": \"" << stage_mode << "\""
+                          << ",\n  \"optimize_expression\": " << (fp.optimize_expression ? "true" : "false")
+                          << ",\n  \"optimize_identity\": " << (fp.optimize_identity ? "true" : "false");
+                double depth_rmse_mm_diag = -1.0;
+                if (result.depth_valid_count > 0 && result.depth_energy >= 0.0) {
+                    depth_rmse_mm_diag = std::sqrt(result.depth_energy / result.depth_valid_count) * 1000.0;
+                }
+                conv_file << ",\n  \"depth_rmse_mm\": " << depth_rmse_mm_diag;
+                conv_file << ",\n  \"energy_history\": [";
                 for (size_t k = 0; k < result.energy_history.size(); ++k) {
                     if (k > 0) conv_file << ", ";
                     conv_file << result.energy_history[k];

@@ -53,20 +53,24 @@ public:
      */
     void setVerbose(bool verbose) { verbose_ = verbose; }
 
+    /**
+     * Forward depth mask to the internal energy function.
+     */
+    void setDepthMask(const cv::Mat& mask) { energy_func_.setDepthMask(mask); }
+
+    /**
+     * Set depth sample step (every Nth pixel). Higher = faster optimization.
+     */
+    void setDepthSampleStep(int step) { energy_func_.setDepthSampleStep(step); }
+
 private:
     EnergyFunction energy_func_;
     const MorphableModel* model_ = nullptr;
     bool initialized_ = false;
     bool verbose_ = false;
     
-    // Damping factor for Levenberg-Marquardt style regularization
-    double damping_ = 1e-4;
-    
-    // Translation prior (previous frame t) for tracking; used in normal equations and clipping
-    Eigen::Vector3d t_prior_ = Eigen::Vector3d::Zero();
-    
     /**
-     * Solve (JtJ + damping) * delta = -Jtr. Used after optionally adding prior to JtJ/Jtr.
+     * Solve JtJ * delta = -Jtr (pure Gauss-Newton). Minimal diagonal regularization only if JtJ is singular.
      */
     Eigen::VectorXd solveNormalEquations(const Eigen::MatrixXd& JtJ, const Eigen::VectorXd& Jtr);
     

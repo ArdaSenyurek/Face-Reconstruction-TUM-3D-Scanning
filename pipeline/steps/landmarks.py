@@ -6,7 +6,7 @@ import cv2
 from pathlib import Path
 from typing import List, Optional, Tuple
 
-from main import PipelineStep, StepResult, StepStatus
+from main import PipelineStep, StepResult, StepStatus, select_frames
 
 try:
     import dlib
@@ -35,7 +35,9 @@ class LandmarkDetectionStep(PipelineStep):
         conversion_reports = self.config.get("conversion_reports", [])
         landmarks_root = Path(self.config["landmarks_root"])
         overlays_root = Path(self.config.get("overlays_root", landmarks_root.parent / "overlays"))
-        run_frames = self.config.get("run_frames", 5)
+        run_frames = self.config.get("run_frames", 4)
+        frame_step = self.config.get("frame_step", 20)
+        frame_indices = self.config.get("frame_indices")
         
         landmark_reports = []
         for seq_report in conversion_reports:
@@ -48,8 +50,7 @@ class LandmarkDetectionStep(PipelineStep):
             if not rgb_dir.exists():
                 continue
             
-            # Process all frames (not just the first one)
-            frames = sorted(rgb_dir.glob("frame_*.png"))[:run_frames]
+            frames = select_frames(rgb_dir, frame_step, run_frames, frame_indices)
             if not frames:
                 continue
             

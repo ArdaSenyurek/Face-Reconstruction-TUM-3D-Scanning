@@ -32,9 +32,11 @@ Eigen::Vector2d DepthRenderer::projectPoint(const Eigen::Vector3d& point) const 
     return Eigen::Vector2d(u, v);
 }
 
-void DepthRenderer::rasterizeTriangle(const Eigen::Vector3d& v0, const Eigen::Vector3d& v1, 
+void DepthRenderer::rasterizeTriangle(const Eigen::Vector3d& v0, const Eigen::Vector3d& v1,
                                       const Eigen::Vector3d& v2,
-                                      cv::Mat& depth_map) const {
+                                      cv::Mat& depth_map,
+                                      int roi_min_u, int roi_max_u,
+                                      int roi_min_v, int roi_max_v) const {
     // Project vertices to image plane
     Eigen::Vector2d p0 = projectPoint(v0);
     Eigen::Vector2d p1 = projectPoint(v1);
@@ -56,6 +58,13 @@ void DepthRenderer::rasterizeTriangle(const Eigen::Vector3d& v0, const Eigen::Ve
     max_u = std::min(width_ - 1, max_u);
     min_v = std::max(0, min_v);
     max_v = std::min(height_ - 1, max_v);
+    if (roi_min_u >= 0 && roi_max_u >= 0 && roi_min_v >= 0 && roi_max_v >= 0) {
+        min_u = std::max(min_u, roi_min_u);
+        max_u = std::min(max_u, roi_max_u);
+        min_v = std::max(min_v, roi_min_v);
+        max_v = std::min(max_v, roi_max_v);
+        if (min_u > max_u || min_v > max_v) return;
+    }
     
     // Barycentric coordinates for point-in-triangle test
     double denom = (p1.y() - p2.y()) * (p0.x() - p2.x()) + (p2.x() - p1.x()) * (p0.y() - p2.y());
@@ -86,22 +95,28 @@ void DepthRenderer::rasterizeTriangle(const Eigen::Vector3d& v0, const Eigen::Ve
     }
 }
 
-cv::Mat DepthRenderer::renderDepth(const Eigen::MatrixXd& vertices, 
-                                    const Eigen::MatrixXi& faces) const {
+cv::Mat DepthRenderer::renderDepth(const Eigen::MatrixXd& vertices,
+                                    const Eigen::MatrixXi& faces,
+                                    const cv::Rect& roi) const {
     if (!initialized_) {
         throw std::runtime_error("DepthRenderer not initialized");
     }
     
-    // Initialize depth map with zeros (invalid depth)
     cv::Mat depth_map(height_, width_, CV_32F, cv::Scalar(0.0f));
     
-    // Rasterize each triangle
+    int roi_min_u = 0, roi_max_u = width_ - 1, roi_min_v = 0, roi_max_v = height_ - 1;
+    if (!roi.empty() && roi.width > 0 && roi.height > 0) {
+        roi_min_u = std::max(0, roi.x);
+        roi_max_u = std::min(width_ - 1, roi.x + roi.width - 1);
+        roi_min_v = std::max(0, roi.y);
+        roi_max_v = std::min(height_ - 1, roi.y + roi.height - 1);
+    }
+    
     for (int i = 0; i < faces.rows(); ++i) {
         int idx0 = faces(i, 0);
         int idx1 = faces(i, 1);
         int idx2 = faces(i, 2);
         
-        // Check indices
         if (idx0 < 0 || idx0 >= vertices.rows() ||
             idx1 < 0 || idx1 >= vertices.rows() ||
             idx2 < 0 || idx2 >= vertices.rows()) {
@@ -112,12 +127,24 @@ cv::Mat DepthRenderer::renderDepth(const Eigen::MatrixXd& vertices,
         Eigen::Vector3d v1 = vertices.row(idx1);
         Eigen::Vector3d v2 = vertices.row(idx2);
         
-        rasterizeTriangle(v0, v1, v2, depth_map);
+        if (!roi.empty() && roi.width > 0 && roi.height > 0) {
+            Eigen::Vector2d p0 = projectPoint(v0);
+            Eigen::Vector2d p1 = projectPoint(v1);
+            Eigen::Vector2d p2 = projectPoint(v2);
+            if (p0.x() < 0 && p1.x() < 0 && p2.x() < 0) continue;
+            int t_min_u = static_cast<int>(std::floor(std::min({p0.x(), p1.x(), p2.x()})));
+            int t_max_u = static_cast<int>(std::ceil(std::max({p0.x(), p1.x(), p2.x()})));
+            int t_min_v = static_cast<int>(std::floor(std::min({p0.y(), p1.y(), p2.y()})));
+            int t_max_v = static_cast<int>(std::ceil(std::max({p0.y(), p1.y(), p2.y()})));
+            if (t_max_u < roi_min_u || t_min_u > roi_max_u || t_max_v < roi_min_v || t_min_v > roi_max_v)
+                continue;
+        }
+        
+        rasterizeTriangle(v0, v1, v2, depth_map, roi_min_u, roi_max_u, roi_min_v, roi_max_v);
     }
     
-    // Set zero depths to NaN (invalid)
-    cv::Mat mask = (depth_map == 0.0f);
-    depth_map.setTo(std::numeric_limits<float>::quiet_NaN(), mask);
+    cv::Mat mask_mat = (depth_map == 0.0f);
+    depth_map.setTo(std::numeric_limits<float>::quiet_NaN(), mask_mat);
     
     return depth_map;
 }

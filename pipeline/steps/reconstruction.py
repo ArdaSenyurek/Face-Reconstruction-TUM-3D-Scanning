@@ -5,10 +5,11 @@ Week 4: Updated to support optimization with landmarks and mapping.
 """
 
 import subprocess
+import time
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Tuple
 
-from main import PipelineStep, StepResult, StepStatus
+from main import PipelineStep, StepResult, StepStatus, select_frames
 
 
 class ReconstructionStep(PipelineStep):
@@ -33,18 +34,25 @@ class ReconstructionStep(PipelineStep):
         meshes_root = Path(self.config["meshes_root"])
         analysis_root = Path(self.config.get("analysis_root", meshes_root.parent / "analysis"))
         landmarks_root = Path(self.config.get("landmarks_root", meshes_root.parent / "landmarks"))
-        run_frames = self.config.get("run_frames", 5)
+        run_frames = self.config.get("run_frames", 1)
+        frame_step = self.config.get("frame_step", 20)
+        frame_indices = self.config.get("frame_indices")
         timeout = self.config.get("timeout", 60)
         save_pointclouds = self.config.get("save_pointclouds", False)
         
         # Week 4: Optimization settings
-        optimize = self.config.get("optimize", False)
+        optimize = self.config.get("optimize", True)
+        recon_stage = self.config.get("recon_stage", "coeffs")
         landmark_mapping = Path(self.config.get("landmark_mapping", "data/landmark_mapping.txt"))
         verbose = self.config.get("verbose", False)
-        max_iterations = self.config.get("max_iterations", 50)
+        max_iterations = self.config.get("max_iterations", 40)
         lambda_landmark = self.config.get("lambda_landmark", 1.0)
         lambda_depth = self.config.get("lambda_depth", 0.1)
-        lambda_reg = self.config.get("lambda_reg", 1.0)
+        lambda_reg = self.config.get("lambda_reg", 2.0)
+        lambda_alpha = self.config.get("lambda_alpha")
+        lambda_delta = self.config.get("lambda_delta")
+        convergence_threshold = self.config.get("convergence_threshold", 1e-5)
+        depth_step = self.config.get("depth_step", 8)
         
         recon_reports = []
         for seq_report in conversion_reports:
@@ -53,7 +61,7 @@ class ReconstructionStep(PipelineStep):
             rgb_dir = seq_dir / "rgb"
             depth_dir = seq_dir / "depth"
             
-            frames = sorted(rgb_dir.glob("frame_*.png"))[:run_frames]
+            frames = select_frames(rgb_dir, frame_step, run_frames, frame_indices)
             
             for frame in frames:
                 depth_frame = depth_dir / frame.name
@@ -71,7 +79,7 @@ class ReconstructionStep(PipelineStep):
                 if save_pointclouds:
                     pc_out = analysis_root / "pointclouds" / seq_dir.name / f"{frame.stem}.ply"
                 
-                success = self._run_reconstruction(
+                success, runtime_seconds = self._run_reconstruction(
                     binary=binary,
                     model_dir=model_dir,
                     intrinsics=intrinsics_path,
@@ -83,11 +91,16 @@ class ReconstructionStep(PipelineStep):
                     landmarks=landmarks_file if landmarks_file.exists() else None,
                     mapping=landmark_mapping if landmark_mapping.exists() else None,
                     optimize=optimize,
+                    recon_stage=recon_stage,
                     verbose=verbose,
                     max_iterations=max_iterations,
                     lambda_landmark=lambda_landmark,
                     lambda_depth=lambda_depth,
                     lambda_reg=lambda_reg,
+                    lambda_alpha=lambda_alpha,
+                    lambda_delta=lambda_delta,
+                    convergence_threshold=convergence_threshold,
+                    depth_step=depth_step,
                 )
                 
                 recon_reports.append({
@@ -96,6 +109,7 @@ class ReconstructionStep(PipelineStep):
                     "mesh": str(mesh_out),
                     "success": success,
                     "optimized": optimize and landmarks_file.exists(),
+                    "runtime_seconds": runtime_seconds,
                 })
                 
                 if success:
@@ -128,14 +142,19 @@ class ReconstructionStep(PipelineStep):
         output_pointcloud: Optional[Path] = None,
         landmarks: Optional[Path] = None,
         mapping: Optional[Path] = None,
-        optimize: bool = False,
+        optimize: bool = True,
+        recon_stage: str = "coeffs",
         verbose: bool = False,
-        max_iterations: int = 50,
+        max_iterations: int = 5,
         lambda_landmark: float = 1.0,
         lambda_depth: float = 0.1,
-        lambda_reg: float = 1.0,
-    ) -> bool:
-        """Run the C++ reconstruction binary."""
+        lambda_reg: float = 2.0,
+        lambda_alpha: Optional[float] = None,
+        lambda_delta: Optional[float] = None,
+        convergence_threshold: float = 1e-5,
+        depth_step: int = 8,
+    ) -> Tuple[bool, float]:
+        """Run the C++ reconstruction binary. Returns (success, runtime_seconds)."""
         cmd = [
             str(binary),
             "--rgb", str(rgb),
@@ -158,26 +177,48 @@ class ReconstructionStep(PipelineStep):
         
         if optimize:
             cmd.append("--optimize")
+            cmd.extend(["--stage", recon_stage])
             cmd.extend(["--max-iter", str(max_iterations)])
             cmd.extend(["--lambda-landmark", str(lambda_landmark)])
             cmd.extend(["--lambda-depth", str(lambda_depth)])
             cmd.extend(["--lambda-reg", str(lambda_reg)])
+            if lambda_alpha is not None:
+                cmd.extend(["--lambda-alpha", str(lambda_alpha)])
+            if lambda_delta is not None:
+                cmd.extend(["--lambda-delta", str(lambda_delta)])
+            cmd.extend(["--convergence-threshold", str(convergence_threshold)])
         else:
             cmd.append("--no-optimize")
         
         if verbose:
             cmd.append("--verbose")
         
+        cmd.extend(["--depth-step", str(max(1, depth_step))])
+        
         output_mesh.parent.mkdir(parents=True, exist_ok=True)
         
+        # No time limit if timeout is 0 or None
+        run_timeout = None if (timeout is None or timeout <= 0) else timeout
+        # When verbose, show C++ optimization logs (do not capture stdout/stderr)
+        capture = not verbose
+        
         try:
-            res = subprocess.run(cmd, check=True, capture_output=True, text=True, timeout=timeout)
+            start = time.perf_counter()
+            res = subprocess.run(
+                cmd,
+                check=True,
+                capture_output=capture,
+                text=True,
+                timeout=run_timeout,
+            )
+            elapsed = time.perf_counter() - start
             mesh_ok = output_mesh.exists()
             cloud_ok = output_pointcloud is None or output_pointcloud.exists()
-            return mesh_ok and cloud_ok
+            return (mesh_ok and cloud_ok, elapsed)
         except subprocess.CalledProcessError as exc:
-            self.logger.debug(f"Reconstruction failed: {exc.stderr}")
-            return False
+            if capture and exc.stderr:
+                self.logger.debug(f"Reconstruction failed: {exc.stderr}")
+            return (False, float("nan"))
         except subprocess.TimeoutExpired:
             self.logger.warning(f"Reconstruction timed out for {rgb.name}")
-            return False
+            return (False, float("nan"))

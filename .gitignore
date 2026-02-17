@@ -26,7 +26,9 @@ reports/
 sample_outputs_small_size/
 outputs_for_upload/
 *.zip
-
+submission/
+old_metrics.json
+docs/
 # Python
 __pycache__/
 *.py[cod]

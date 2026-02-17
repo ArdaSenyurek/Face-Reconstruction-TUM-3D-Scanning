@@ -23,7 +23,6 @@
 #include "model/MorphableModel.h"
 #include "alignment/Procrustes.h"
 #include "alignment/LandmarkMapping.h"
-#include "alignment/ICP.h"
 #include <iostream>
 #include <iomanip>
 #include <vector>
@@ -520,14 +519,14 @@ bool createLandmarkOverlayPNG(const std::string& filepath,
 // Helper to write JSON (simple, no external dependency)
 void writeJSONReport(const std::string& filepath,
                      const SimilarityTransform& transform,
-                     double rmse_after_icp, double mean_error_after_icp, double median_error_after_icp,
+                     double rmse_final, double mean_error_final, double median_error_final,
                      const std::vector<Eigen::Vector3d>& observed_points,
                      const Eigen::MatrixXd& aligned_vertices,
                      const MappingQualityMetrics& mapping_quality,
                      double rmse_pre_alignment,
                      double rmse_after_procrustes,
                      const std::vector<double>& errors_after_procrustes,
-                     const std::vector<double>& errors_after_icp,
+                     const std::vector<double>& /*errors_final*/,
                      const std::vector<int>& worst_landmarks,
                      const std::vector<int>& outliers_after_alignment,
                      const std::map<std::string, std::string>& visualization_files) {
@@ -593,25 +592,18 @@ void writeJSONReport(const std::string& filepath,
     // Procrustes analysis section
     double improvement_percent = 0.0;
     if (rmse_pre_alignment > 1e-6) {
-        improvement_percent = ((rmse_pre_alignment - rmse_after_icp * 1000.0) / rmse_pre_alignment) * 100.0;
+        improvement_percent = ((rmse_pre_alignment - rmse_final * 1000.0) / rmse_pre_alignment) * 100.0;
     }
     
     file << "  \"procrustes_analysis\": {\n";
     file << "    \"num_correspondences\": " << mapping_quality.num_valid_mappings << ",\n";
     file << "    \"pre_alignment_rmse_mm\": " << rmse_pre_alignment << ",\n";
     file << "    \"post_procrustes_rmse_mm\": " << rmse_after_procrustes * 1000.0 << ",\n";
-    file << "    \"post_icp_rmse_mm\": " << rmse_after_icp * 1000.0 << ",\n";
     file << "    \"improvement_percent\": " << improvement_percent << ",\n";
     file << "    \"per_landmark_errors_after_procrustes_mm\": [";
     for (size_t i = 0; i < errors_after_procrustes.size(); ++i) {
         file << errors_after_procrustes[i] * 1000.0;
         if (i < errors_after_procrustes.size() - 1) file << ", ";
-    }
-    file << "],\n";
-    file << "    \"per_landmark_errors_after_icp_mm\": [";
-    for (size_t i = 0; i < errors_after_icp.size(); ++i) {
-        file << errors_after_icp[i] * 1000.0;
-        if (i < errors_after_icp.size() - 1) file << ", ";
     }
     file << "],\n";
     file << "    \"worst_landmarks\": [";
@@ -646,14 +638,14 @@ void writeJSONReport(const std::string& filepath,
     file << "    ]\n";
     file << "  },\n";
     
-    // Alignment errors section (final after ICP)
+    // Alignment errors section (final after Procrustes)
     file << "  \"alignment_errors\": {\n";
-    file << "    \"rmse_m\": " << rmse_after_icp << ",\n";
-    file << "    \"rmse_mm\": " << rmse_after_icp * 1000.0 << ",\n";
-    file << "    \"mean_error_m\": " << mean_error_after_icp << ",\n";
-    file << "    \"mean_error_mm\": " << mean_error_after_icp * 1000.0 << ",\n";
-    file << "    \"median_error_m\": " << median_error_after_icp << ",\n";
-    file << "    \"median_error_mm\": " << median_error_after_icp * 1000.0 << "\n";
+    file << "    \"rmse_m\": " << rmse_final << ",\n";
+    file << "    \"rmse_mm\": " << rmse_final * 1000.0 << ",\n";
+    file << "    \"mean_error_m\": " << mean_error_final << ",\n";
+    file << "    \"mean_error_mm\": " << mean_error_final * 1000.0 << ",\n";
+    file << "    \"median_error_m\": " << median_error_final << ",\n";
+    file << "    \"median_error_mm\": " << median_error_final * 1000.0 << "\n";
     file << "  },\n";
     
     // Depth z-range section
@@ -669,7 +661,7 @@ void writeJSONReport(const std::string& filepath,
     file << "  \"sanity_checks\": {\n";
     file << "    \"rotation_det_valid\": " << (std::abs(transform.rotation.determinant() - 1.0) < 0.01 ? "true" : "false") << ",\n";
     file << "    \"scale_in_range\": " << (transform.scale > 0.5 && transform.scale < 2.0 ? "true" : "false") << ",\n";
-    file << "    \"rmse_acceptable\": " << (rmse_after_icp < 0.05 ? "true" : "false") << "\n";
+    file << "    \"rmse_acceptable\": " << (rmse_final < 0.05 ? "true" : "false") << "\n";
     file << "  },\n";
     
     // Visualization files section
@@ -827,23 +819,14 @@ int main(int argc, char* argv[]) {
     
     // Step 2: Get corresponding model vertices using mapping
     // Build matched pairs: only keep landmarks that have both valid depth AND valid mapping
-    // CRITICAL: Convert BFM model from mm to meters before Procrustes
-    // CRITICAL: Apply coordinate system transformation (BFM -> Camera)
+    // Model on disk (mean_shape.bin) is already in camera frame (Y,Z flipped by convert_bfm_to_project.py).
+    // Only convert mm -> meters here; do NOT apply bfm_to_camera again (would double-flip and break alignment).
     std::cout << "[7] Getting corresponding model vertices..." << std::endl;
-    std::cout << "    Converting BFM model from mm to meters (scale=" << bfm_scale << ")..." << std::endl;
-    std::cout << "    Applying BFM->Camera coordinate transform (flip Y and Z)..." << std::endl;
+    std::cout << "    Converting model from mm to meters (scale=" << bfm_scale << ")..." << std::endl;
     
     std::vector<Eigen::Vector3d> matched_observed;
     std::vector<Eigen::Vector3d> matched_model;
     Eigen::MatrixXd mean_shape = model.getMeanShapeMatrix();
-    
-    // BFM coordinate system: X right, Y up, Z out of face (towards viewer)
-    // Camera coordinate system: X right, Y down, Z forward (into scene)
-    // Transform: flip Y (up->down) and flip Z (face towards camera -> face away)
-    Eigen::Matrix3d bfm_to_camera;
-    bfm_to_camera << 1,  0,  0,
-                     0, -1,  0,
-                     0,  0, -1;
     
     // Verify same ordering: ensure matched pairs have same indices
     for (size_t i = 0; i < valid_landmark_indices.size(); ++i) {
@@ -858,10 +841,8 @@ int main(int argc, char* argv[]) {
             continue;
         }
         
-        // Both observed 3D point AND model point are valid - add as matched pair
-        // CRITICAL: Convert BFM from mm to meters AND transform coordinate system
+        // Model is already in camera frame (from conversion script); only scale mm -> meters
         Eigen::Vector3d model_point = mean_shape.row(model_vertex_idx).transpose() * bfm_scale;
-        model_point = bfm_to_camera * model_point;  // Apply coordinate transform
         matched_model.push_back(model_point);
         matched_observed.push_back(observed_3d_points[i]);  // Use same index i - same ordering
     }
@@ -1001,52 +982,17 @@ int main(int argc, char* argv[]) {
         std::cout << "    Saved: " << post_procrustes_ply << std::endl;
     }
     
-    // Step 4: Refine with ICP on landmark correspondences only
-    std::cout << "[9] Refining alignment with ICP (landmark correspondences only)..." << std::endl;
-    ICP icp;
-    
-    // Use only landmark correspondences for ICP refinement
-    // This ensures we refine on known good correspondences
-    ICP::ICPResult icp_result = icp.align(
-        source_points,  // Model landmark vertices
-        target_points,  // Observed landmark points
-        transform.rotation,
-        transform.translation,
-        5,   // max iterations (fewer for landmark-only)
-        1e-4  // convergence threshold
-    );
-    
-    // Update transform with ICP result (keep scale from Procrustes)
-    transform.rotation = icp_result.rotation;
-    transform.translation = icp_result.translation;
-    
-    std::cout << "    ICP iterations: " << icp_result.iterations << std::endl;
-    std::cout << "    ICP converged: " << (icp_result.converged ? "Yes" : "No") << std::endl;
-    std::cout << "    ICP final error: " << icp_result.final_error << " m (" 
-              << icp_result.final_error * 1000.0 << " mm)" << std::endl;
-    
-    // Recompute alignment error after ICP
+    // Final alignment results (Procrustes-only, no ICP)
     Eigen::MatrixXd refined_model_landmarks = transform.apply(source_points);
-    std::vector<double> errors_after_icp = computeAlignmentErrors(
-        source_points, target_points, transform);
-    total_error = 0.0;
-    for (double err : errors_after_icp) {
-        total_error += err * err;
-    }
-    double rmse_after_icp = std::sqrt(total_error / errors_after_icp.size());
-    sorted_errors = errors_after_icp;
-    std::sort(sorted_errors.begin(), sorted_errors.end());
-    double mean_error_after_icp = std::accumulate(errors_after_icp.begin(), errors_after_icp.end(), 0.0) / errors_after_icp.size();
-    double median_error_after_icp = sorted_errors[sorted_errors.size() / 2];
-    
-    std::cout << "    Alignment RMSE (after ICP): " << rmse_after_icp << " m (" << rmse_after_icp * 1000.0 << " mm)" << std::endl;
-    std::cout << "    Mean error: " << mean_error_after_icp << " m (" << mean_error_after_icp * 1000.0 << " mm)" << std::endl;
-    std::cout << "    Median error: " << median_error_after_icp << " m (" << median_error_after_icp * 1000.0 << " mm)" << std::endl;
+    std::vector<double> errors_after_alignment = errors_after_procrustes;
+    double rmse_after_alignment = rmse_after_procrustes;
+    double mean_error_after_alignment = mean_error_procrustes;
+    double median_error_after_alignment = median_error_procrustes;
     
     // Find worst landmarks (top 5 with largest errors)
     std::vector<std::pair<double, int>> error_landmark_pairs;
-    for (size_t i = 0; i < errors_after_icp.size() && i < valid_landmark_indices.size(); ++i) {
-        error_landmark_pairs.push_back({errors_after_icp[i], valid_landmark_indices[i]});
+    for (size_t i = 0; i < errors_after_alignment.size() && i < valid_landmark_indices.size(); ++i) {
+        error_landmark_pairs.push_back({errors_after_alignment[i], valid_landmark_indices[i]});
     }
     std::sort(error_landmark_pairs.begin(), error_landmark_pairs.end(), std::greater<std::pair<double, int>>());
     std::vector<int> worst_landmarks;
@@ -1056,15 +1002,15 @@ int main(int argc, char* argv[]) {
     
     // Detect outliers after alignment (using robust methods)
     std::vector<int> outliers_after_alignment;
-    if (!errors_after_icp.empty() && !valid_landmark_indices.empty() && 
-        errors_after_icp.size() == valid_landmark_indices.size()) {
-        std::vector<double> errors_after_icp_mm;
-        for (double err : errors_after_icp) {
-            errors_after_icp_mm.push_back(err * 1000.0);  // Convert to mm
+    if (!errors_after_alignment.empty() && !valid_landmark_indices.empty() && 
+        errors_after_alignment.size() == valid_landmark_indices.size()) {
+        std::vector<double> errors_after_alignment_mm;
+        for (double err : errors_after_alignment) {
+            errors_after_alignment_mm.push_back(err * 1000.0);  // Convert to mm
         }
         std::map<std::string, int> method_counts_after;
         outliers_after_alignment = detectOutliersRobust(
-            errors_after_icp_mm, valid_landmark_indices, method_counts_after);
+            errors_after_alignment_mm, valid_landmark_indices, method_counts_after);
     }
     
     std::cout << "    Outliers after alignment: " << outliers_after_alignment.size() << " landmarks" << std::endl;
@@ -1080,13 +1026,8 @@ int main(int argc, char* argv[]) {
     
     // Step 5: Apply final transform to full model
     std::cout << "[10] Applying final transform to model and saving..." << std::endl;
-    // CRITICAL: Convert BFM from mm to meters AND apply coordinate transform before Procrustes transform
-    Eigen::MatrixXd mean_vertices = model.getMeanShapeMatrix() * bfm_scale;  // Convert to meters
-    
-    // Apply BFM->Camera coordinate transform to all vertices (reuse bfm_to_camera from above)
-    // BFM: X right, Y up, Z out | Camera: X right, Y down, Z forward
-    mean_vertices = (bfm_to_camera * mean_vertices.transpose()).transpose();
-    
+    // Model is already in camera frame; only convert mm -> meters
+    Eigen::MatrixXd mean_vertices = model.getMeanShapeMatrix() * bfm_scale;
     Eigen::MatrixXd aligned_vertices = transform.apply(mean_vertices);
     
     // Depth z-range check
@@ -1174,12 +1115,12 @@ int main(int argc, char* argv[]) {
         viz_files["post_procrustes_ply"] = post_procrustes_ply;
         viz_files["landmarks_overlay_png"] = landmarks_overlay_png;
         
-        writeJSONReport(report_path, transform, rmse_after_icp, mean_error_after_icp, median_error_after_icp,
+        writeJSONReport(report_path, transform, rmse_after_alignment, mean_error_after_alignment, median_error_after_alignment,
                        observed_3d_points, aligned_vertices, mapping_quality,
                        mapping_quality.pre_alignment_rmse_mm,
                        rmse_after_procrustes,
                        errors_after_procrustes,
-                       errors_after_icp,
+                       errors_after_alignment,
                        worst_landmarks,
                        outliers_after_alignment,
                        viz_files);

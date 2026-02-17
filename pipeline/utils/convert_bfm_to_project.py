@@ -50,11 +50,11 @@ def _save_binary_vector(path: Path, array: np.ndarray) -> None:
 
 
 def _save_binary_matrix(path: Path, array: np.ndarray) -> None:
-    """Save numpy matrix as raw binary float64 (column-major for Eigen compatibility)."""
+    """Save numpy matrix as raw binary float64 in column-major order (Eigen default)."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    # Eigen expects column-major order, numpy default is row-major
-    # We save row-major and load accordingly in C++
-    array.astype(np.float64).tofile(str(path))
+    # C++ MorphableModel loads into Eigen::MatrixXd (column-major); file must be column-major
+    arr = np.asarray(array, dtype=np.float64)
+    arr.flatten(order="F").tofile(str(path))
 
 
 def _save_faces_binary(path: Path, faces: np.ndarray) -> None:
@@ -226,9 +226,13 @@ def load_bfm_2017(h5_path: Path) -> Optional[dict]:
             result["expression_basis"] = np.zeros((len(result["mean_shape"]), 0))
             result["expression_stddev"] = np.zeros(0)
         
-        # Faces
+        # Faces (BFM/Statismo H5 may use 1-based indexing; convert to 0-based like .mat)
         if "shape/representer/cells" in f:
             result["faces"] = f["shape/representer/cells"][:].T.astype(np.int32)
+            # If min index is 1, treat as 1-based and convert to 0-based (avoids "exploded" mesh)
+            if result["faces"].size > 0 and result["faces"].min() == 1:
+                result["faces"] = result["faces"] - 1
+                print("  Converted face indices from 1-based to 0-based")
         else:
             result["faces"] = np.zeros((0, 3), dtype=np.int32)
         
@@ -337,8 +341,8 @@ def convert_bfm_to_project(bfm_path: Path, output_dir: Path,
         expression_basis = expression_basis[:, :num_expression]
         expression_stddev = expression_stddev[:num_expression]
     
-    # Flip Y axis: BFM uses Y-up, camera uses Y-down
-    print("  Flipping Y axis (BFM Y-up -> camera Y-down)")
+    # Flip Y and Z: BFM uses Y-up, Z out of face; camera uses Y-down, Z into scene
+    print("  Flipping Y and Z (BFM -> camera frame)")
     mean_shape = _flip_yz_axes_flat(mean_shape)
     identity_basis = _flip_yz_axes_flat(identity_basis)  # Same structure: [x,y,z,...] per row
     expression_basis = _flip_yz_axes_flat(expression_basis)
